@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Coup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <div id="bg-vignette"></div>
+
+  <!-- LOBBY -->
+  <section id="screen-lobby" class="screen">
+    <div class="hero">
+      <div class="crest">♛</div>
+      <h1>COUP</h1>
+      <p class="tagline">Blefe. Traição. Poder.</p>
+    </div>
+
+    <div class="panel lobby-card" id="lobby-forms">
+      <div class="tabs">
+        <button class="tab active" data-tab="create">Criar Sala</button>
+        <button class="tab" data-tab="join">Entrar em Sala</button>
+      </div>
+
+      <form id="form-create" class="tab-panel active">
+        <label>Seu nome</label>
+        <input type="text" id="create-name" maxlength="20" placeholder="Ex: Marco" required />
+        <button type="submit" class="btn btn-primary">Criar sala</button>
+      </form>
+
+      <form id="form-join" class="tab-panel">
+        <label>Seu nome</label>
+        <input type="text" id="join-name" maxlength="20" placeholder="Ex: Marco" required />
+        <label>Código da sala</label>
+        <input type="text" id="join-code" maxlength="4" placeholder="Ex: KXQP" autocapitalize="characters" required />
+        <button type="submit" class="btn btn-primary">Entrar</button>
+      </form>
+
+      <p class="form-error" id="lobby-error" hidden></p>
+    </div>
+
+    <div class="panel waiting-room" id="waiting-room" hidden>
+      <p class="waiting-label">Código da sala</p>
+      <div class="room-code" id="room-code-display"></div>
+      <p class="hint">Compartilhe este código com quem vai jogar com você.</p>
+      <ul class="lobby-players" id="lobby-players"></ul>
+      <button class="btn btn-primary" id="btn-start" hidden>Iniciar Partida</button>
+      <p class="hint" id="waiting-hint">Aguardando o anfitrião iniciar a partida…</p>
+    </div>
+  </section>
+
+  <!-- GAME -->
+  <section id="screen-game" class="screen" hidden>
+    <header class="game-header">
+      <div class="brand-mini">♛ COUP</div>
+      <div class="turn-indicator" id="turn-indicator"></div>
+      <button class="btn btn-ghost btn-log-toggle" id="btn-toggle-log">Histórico</button>
+    </header>
+
+    <div class="game-body">
+      <div class="table-wrap">
+        <div class="table" id="players-table"></div>
+      </div>
+
+      <aside class="log-panel" id="log-panel">
+        <h3>Histórico</h3>
+        <ul class="log-list" id="log-list"></ul>
+      </aside>
+    </div>
+
+    <footer class="hand-bar">
+      <div class="my-cards" id="my-cards"></div>
+      <div class="my-coins" id="my-coins"></div>
+      <div class="action-bar" id="action-bar"></div>
+    </footer>
+  </section>
+
+  <div id="modal-overlay" class="modal-overlay" hidden>
+    <div class="modal" id="modal-content"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/client.js"></script>
+</body>
+</html>
