@@ -1,10 +1,15 @@
 const Deck = require('./Deck');
 const {
   ACTIONS,
+  CHARACTER_INFO,
   MUST_COUP_AT_COINS,
   STARTING_COINS,
   STARTING_INFLUENCE,
 } = require('./constants');
+
+function charName(character) {
+  return (CHARACTER_INFO[character] && CHARACTER_INFO[character].name) || character;
+}
 
 /**
  * Pure game-state machine for Coup. Knows nothing about sockets/rooms.
@@ -45,6 +50,38 @@ class GameEngine {
   setConnected(id, connected) {
     const player = this.getPlayer(id);
     if (player) player.connected = connected;
+  }
+
+  // Called by the server after a grace period once a player has been
+  // disconnected the whole time, if the game is waiting specifically on
+  // their response (challenge/block window, or a decision only they can
+  // make). Resolves it on their behalf so the round doesn't hang forever
+  // waiting for someone who left. A quick refresh/reconnect never reaches
+  // this, since the server only calls it if the player is still offline
+  // once the grace period elapses.
+  autoResolveForDisconnected(playerId) {
+    if (this.phase === 'game_over' || !this.pending) return;
+    const disconnectedPlayer = this.getPlayer(playerId);
+    if (!disconnectedPlayer || disconnectedPlayer.connected) return;
+    try {
+      if (this.phase === 'challenge_action' || this.phase === 'block_window' || this.phase === 'challenge_block') {
+        const eligible = this.phase === 'block_window'
+          ? this._eligibleBlockers(this.pending)
+          : this._eligibleChallengers(this.phase === 'challenge_block' ? this.pending.blockerId : this.pending.actorId);
+        if (eligible.includes(playerId) && !this.pending.respondedIds.has(playerId)) {
+          this.pass(playerId);
+        }
+      } else if (this.phase === 'awaiting_loss' && this.pending.awaitingLossPlayerId === playerId) {
+        const player = this.getPlayer(playerId);
+        const remaining = player.influence.filter((c) => !c.revealed);
+        if (remaining.length > 0) this.loseInfluence(playerId, remaining[0].character);
+      } else if (this.phase === 'exchange_choice' && this.pending.actorId === playerId) {
+        const keepCount = this.getPlayer(playerId).influence.filter((c) => !c.revealed).length;
+        this.exchangeChoice(playerId, this.pending.options.slice(0, keepCount));
+      }
+    } catch (err) {
+      // best-effort: never let cleanup on disconnect crash the room
+    }
   }
 
   currentPlayer() {
@@ -201,7 +238,7 @@ class GameEngine {
     if (!action.blockedBy.includes(character)) throw new Error('Esse personagem não bloqueia essa ação.');
 
     const blocker = this.getPlayer(playerId);
-    this.addLog(`${blocker.name} bloqueou alegando ser ${character}.`);
+    this.addLog(`${blocker.name} bloqueou alegando ser ${charName(character)}.`);
 
     this.pending = {
       ...this.pending,
@@ -226,7 +263,7 @@ class GameEngine {
     const challenger = this.getPlayer(challengerId);
     const hasCard = claimant.influence.some((c) => !c.revealed && c.character === claimedCharacter);
 
-    this.addLog(`${challenger.name} desafiou ${claimant.name} (alegava ${claimedCharacter}).`);
+    this.addLog(`${challenger.name} desafiou ${claimant.name} (alegava ${charName(claimedCharacter)}).`);
 
     if (hasCard) {
       // Claimant proven honest: reveal+replace that card, challenger loses influence.
@@ -239,7 +276,7 @@ class GameEngine {
       // un-reveal conceptually: claimant keeps same influence count, card swapped for a hidden one
       claimant.influence[claimant.influence.length - 1].revealed = false;
 
-      this.addLog(`${claimant.name} realmente tinha ${claimedCharacter}. Carta trocada no baralho.`);
+      this.addLog(`${claimant.name} realmente tinha ${charName(claimedCharacter)}. Carta trocada no baralho.`);
       this._queueLoss(challengerId, isBlockChallenge
         ? { type: 'block_stands' }
         : { type: 'action_challenge_survived' });
@@ -279,7 +316,7 @@ class GameEngine {
     const player = this.getPlayer(playerId);
     const card = player.influence.find((c) => !c.revealed && c.character === character);
     card.revealed = true;
-    this.addLog(`${player.name} perdeu a influência: ${character}.`);
+    this.addLog(`${player.name} perdeu a influência: ${charName(character)}.`);
 
     if (this._checkWin()) return;
 

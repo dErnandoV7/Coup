@@ -10,12 +10,34 @@
   };
 
   const CHAR_META = {
-    duke: { name: 'Duque', light: 'var(--c-duke)', dark: 'var(--c-duke-dark)' },
-    assassin: { name: 'Assassino', light: 'var(--c-assassin)', dark: 'var(--c-assassin-dark)' },
-    captain: { name: 'Capitão', light: 'var(--c-captain)', dark: 'var(--c-captain-dark)' },
-    ambassador: { name: 'Embaixador', light: 'var(--c-ambassador)', dark: 'var(--c-ambassador-dark)' },
-    contessa: { name: 'Condessa', light: 'var(--c-contessa)', dark: 'var(--c-contessa-dark)' },
+    duke: {
+      name: 'Duque', light: 'var(--c-duke)', dark: 'var(--c-duke-dark)',
+      desc: 'Ação Taxar: cobra 3 moedas do tesouro, sem custo. Bloqueio: impede a Ajuda Externa de qualquer jogador.',
+    },
+    assassin: {
+      name: 'Assassino', light: 'var(--c-assassin)', dark: 'var(--c-assassin-dark)',
+      desc: 'Ação Assassinar: por 3 moedas, elimina uma carta de influência de um alvo. Só é bloqueada por quem alegar Condessa.',
+    },
+    captain: {
+      name: 'Capitão', light: 'var(--c-captain)', dark: 'var(--c-captain-dark)',
+      desc: 'Ação Extorquir: rouba 2 moedas (ou o que restar) de um alvo, sem custo. Bloqueio: impede uma Extorsão sofrida.',
+    },
+    ambassador: {
+      name: 'Embaixador', light: 'var(--c-ambassador)', dark: 'var(--c-ambassador-dark)',
+      desc: 'Ação Trocar: compra 2 cartas do baralho e escolhe quais manter, descartando o resto. Bloqueio: impede uma Extorsão sofrida.',
+    },
+    contessa: {
+      name: 'Condessa', light: 'var(--c-contessa)', dark: 'var(--c-contessa-dark)',
+      desc: 'Sem ação própria. Bloqueio: impede um Assassinato sofrido.',
+    },
   };
+
+  const PLAYER_LOG_COLORS = ['#6fb3ff', '#ff9a6f', '#7be08a', '#e08ae0', '#ffd76f', '#8ad9d0'];
+
+  const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+  }
 
   const ACTIONS_CLIENT = {
     income: { label: 'Renda', cost: 0, sub: '+1 moeda', requiresTarget: false },
@@ -39,8 +61,8 @@
   const modalContent = el('modal-content');
   const toastEl = el('toast');
 
-  let myToken = localStorage.getItem('coup_token') || null;
-  let myRoomCode = localStorage.getItem('coup_room') || null;
+  let myToken = sessionStorage.getItem('coup_token') || null;
+  let myRoomCode = sessionStorage.getItem('coup_room') || null;
   let lastLobbyState = null;
   let lastGameState = null;
   let activeModalKey = null;
@@ -59,13 +81,13 @@
   function saveIdentity(roomCode, token) {
     myToken = token;
     myRoomCode = roomCode;
-    localStorage.setItem('coup_token', token);
-    localStorage.setItem('coup_room', roomCode);
+    sessionStorage.setItem('coup_token', token);
+    sessionStorage.setItem('coup_room', roomCode);
   }
 
   function clearIdentity() {
-    localStorage.removeItem('coup_token');
-    localStorage.removeItem('coup_room');
+    sessionStorage.removeItem('coup_token');
+    sessionStorage.removeItem('coup_room');
   }
 
   function characterCard(character, { revealed, selected } = {}) {
@@ -73,7 +95,7 @@
     const cls = ['hand-card'];
     if (revealed) cls.push('is-revealed');
     if (selected) cls.push('selected');
-    return `<div class="${cls.join(' ')}" style="--card-color-light:${meta.light};--card-color-dark:${meta.dark}">
+    return `<div class="${cls.join(' ')}" style="--card-color-light:${meta.light};--card-color-dark:${meta.dark}" data-tooltip="${escapeHtml(meta.desc)}">
       <div class="hc-icon" style="color:#fff">${ICONS[character]}</div>
       <div class="hc-name">${meta.name}</div>
     </div>`;
@@ -91,7 +113,12 @@
     const state = lastGameState;
     if (!state) return '';
     const p = state.players.find((pl) => pl.id === id);
-    return p ? p.name : '';
+    return p ? escapeHtml(p.name) : '';
+  }
+
+  function playerLogColor(playerId, state) {
+    const idx = state.players.findIndex((p) => p.id === playerId);
+    return PLAYER_LOG_COLORS[idx % PLAYER_LOG_COLORS.length];
   }
 
   function closeModal() {
@@ -118,9 +145,13 @@
 
   el('form-create').addEventListener('submit', (e) => {
     e.preventDefault();
+    const btn = e.target.querySelector('button[type="submit"]');
+    if (btn.disabled) return;
+    btn.disabled = true;
     const name = el('create-name').value.trim();
     lobbyError.hidden = true;
     socket.emit('create_room', { playerName: name }, (res) => {
+      btn.disabled = false;
       if (!res.ok) { lobbyError.textContent = res.error; lobbyError.hidden = false; return; }
       saveIdentity(res.roomCode, res.token);
     });
@@ -128,16 +159,22 @@
 
   el('form-join').addEventListener('submit', (e) => {
     e.preventDefault();
+    const btn = e.target.querySelector('button[type="submit"]');
+    if (btn.disabled) return;
+    btn.disabled = true;
     const name = el('join-name').value.trim();
     const code = el('join-code').value.trim().toUpperCase();
     lobbyError.hidden = true;
     socket.emit('join_room', { playerName: name, roomCode: code }, (res) => {
+      btn.disabled = false;
       if (!res.ok) { lobbyError.textContent = res.error; lobbyError.hidden = false; return; }
       saveIdentity(res.roomCode, res.token);
     });
   });
 
   el('btn-start').addEventListener('click', () => {
+    if (el('btn-start').disabled) return;
+    el('btn-start').disabled = true;
     socket.emit('start_game');
   });
 
@@ -153,7 +190,10 @@
     }
   });
 
-  socket.on('error_message', (message) => showToast(message));
+  socket.on('error_message', (message) => {
+    showToast(message);
+    el('btn-start').disabled = false;
+  });
 
   socket.on('lobby_state', (state) => {
     lastGameState = null;
@@ -171,7 +211,7 @@
     el('lobby-players').innerHTML = state.players.map((p) => `
       <li>
         <span class="dot ${p.connected ? '' : 'offline'}"></span>
-        <span>${p.name}${p.token === state.you ? ' (você)' : ''}</span>
+        <span>${escapeHtml(p.name)}${p.token === state.you ? ' (você)' : ''}</span>
         ${p.token === state.hostToken ? '<span class="host-tag">Anfitrião</span>' : ''}
       </li>
     `).join('');
@@ -227,7 +267,7 @@
       return `<div class="${cls.join(' ')}">
         <div class="player-name-row">
           <span class="dot ${p.connected ? '' : 'offline'}"></span>
-          <span class="player-name">${p.name}${p.id === state.you ? ' (você)' : ''}</span>
+          <span class="player-name">${escapeHtml(p.name)}${p.id === state.you ? ' (você)' : ''}</span>
         </div>
         <div class="player-coins"><span class="coin-icon"></span> ${p.coins}</div>
         <div class="mini-cards">${cardsHtml}</div>
@@ -244,10 +284,24 @@
     syncModal(state, myself);
   }
 
+  function colorizeLogText(text, state) {
+    let html = escapeHtml(text);
+    const named = state.players
+      .map((p) => ({ id: p.id, name: escapeHtml(p.name) }))
+      .filter((p) => p.name)
+      .sort((a, b) => b.name.length - a.name.length);
+    named.forEach(({ id, name }) => {
+      const color = playerLogColor(id, state);
+      const pattern = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      html = html.replace(new RegExp(pattern, 'g'), `<span class="log-player" style="color:${color}">${name}</span>`);
+    });
+    return html;
+  }
+
   function renderLog(state) {
-    el('log-list').innerHTML = state.log.map((entry) => `<li>${entry.text}</li>`).join('');
-    const list = el('log-list');
-    list.scrollTop = list.scrollHeight;
+    el('log-list').innerHTML = state.log.map((entry) => `<li>${colorizeLogText(entry.text, state)}</li>`).join('');
+    const panel = el('log-panel');
+    panel.scrollTop = panel.scrollHeight;
   }
 
   function renderActionBar(state, myself) {
@@ -357,8 +411,8 @@
           <button class="btn btn-primary" id="btn-challenge">Desafiar</button>
         </div>
       `);
-      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); closeModal(); });
-      modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); closeModal(); });
+      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
+      modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); });
       return;
     }
 
@@ -381,9 +435,9 @@
         <div class="modal-actions"><button class="btn btn-ghost" id="btn-pass">Passar</button></div>
       `);
       modalContent.querySelectorAll('.choice-card').forEach((b) => {
-        b.addEventListener('click', () => { socket.emit('block', { character: b.dataset.char }); closeModal(); });
+        b.addEventListener('click', () => { socket.emit('block', { character: b.dataset.char }); });
       });
-      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); closeModal(); });
+      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
       return;
     }
 
@@ -406,8 +460,8 @@
           <button class="btn btn-primary" id="btn-challenge">Desafiar</button>
         </div>
       `);
-      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); closeModal(); });
-      modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); closeModal(); });
+      modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
+      modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); });
       return;
     }
 
@@ -428,7 +482,7 @@
         </div>
       `);
       modalContent.querySelectorAll('.choice-card').forEach((b) => {
-        b.addEventListener('click', () => { socket.emit('lose_influence', { character: b.dataset.index }); closeModal(); });
+        b.addEventListener('click', () => { socket.emit('lose_influence', { character: b.dataset.index }); });
       });
       return;
     }
@@ -477,7 +531,7 @@
     const keepCount = pending.keepCount;
     openModal(`
       <h2>Trocar Cartas</h2>
-      <p class="desc">Escolha ${keepCount} carta(s) para manter.</p>
+      <p class="desc">Escolha ${keepCount} ${keepCount === 1 ? 'carta' : 'cartas'} para manter.</p>
       <div class="modal-choices" id="exchange-choices">
         ${pending.options.map((c, i) => choiceCardHtml(c, i)).join('')}
       </div>
@@ -504,8 +558,6 @@
     confirmBtn.addEventListener('click', () => {
       const keep = exchangeSelection.map((i) => pending.options[i]);
       socket.emit('exchange_choice', { keep });
-      exchangeSelection = [];
-      closeModal();
     });
   }
 

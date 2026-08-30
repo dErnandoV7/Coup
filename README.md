@@ -16,7 +16,7 @@ Abra `http://localhost:3000` no navegador. Para testar sozinho, abra em duas aba
 1. Um jogador clica em **Criar Sala** e recebe um código de 4 letras.
 2. Os outros jogadores clicam em **Entrar em Sala** e digitam esse código.
 3. Quando todos entrarem (mínimo 2, máximo 6), o anfitrião clica em **Iniciar Partida**.
-4. Se alguém atualizar a página ou cair a conexão, basta abrir o link de novo no mesmo navegador — o jogo lembra automaticamente do seu lugar na sala (via `localStorage`).
+4. Se alguém atualizar a página ou cair a conexão, basta recarregar a mesma aba — o jogo lembra automaticamente do seu lugar na sala (via `sessionStorage`, isolado por aba: abrir várias abas no mesmo navegador para jogar contra si mesmo continua funcionando sem misturar as identidades).
 
 ## Colocar no ar para jogar com um amigo à distância (Render, grátis)
 

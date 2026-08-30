@@ -49,12 +49,19 @@ class RoomManager {
   }
 
   getRoom(code) {
-    return this.rooms.get((code || '').toUpperCase());
+    return this.rooms.get(String(code || '').toUpperCase());
   }
 
   addPlayer(room, name, socketId) {
     const token = crypto.randomUUID();
-    const player = { token, name: name.slice(0, 20) || 'Jogador', socketId, connected: true };
+    let safeName = (typeof name === 'string' ? name : '').trim().slice(0, 20) || 'Jogador';
+    const existingNames = new Set(room.players.map((p) => p.name.toLowerCase()));
+    if (existingNames.has(safeName.toLowerCase())) {
+      let n = 2;
+      while (existingNames.has(`${safeName} (${n})`.toLowerCase())) n++;
+      safeName = `${safeName} (${n})`;
+    }
+    const player = { token, name: safeName, socketId, connected: true };
     room.players.push(player);
     if (!room.hostToken) room.hostToken = token;
     return player;
@@ -72,7 +79,16 @@ class RoomManager {
     return null;
   }
 
+  reassignHostIfNeeded(room) {
+    if (room.started) return;
+    const currentHost = room.players.find((p) => p.token === room.hostToken);
+    if (currentHost && currentHost.connected) return;
+    const nextHost = room.players.find((p) => p.connected);
+    room.hostToken = nextHost ? nextHost.token : room.hostToken;
+  }
+
   startGame(room) {
+    if (room.started) return room.engine;
     if (room.players.length < 2) throw new Error('É preciso pelo menos 2 jogadores.');
     room.engine = new GameEngine(room.players.map((p) => ({ id: p.token, name: p.name })));
     return room.engine;
