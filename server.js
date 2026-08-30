@@ -166,6 +166,10 @@ io.on('connection', (socket) => {
     room.engine.exchangeChoice(player.token, keep);
   }));
 
+  socket.on('forfeit', withGame((room, player) => {
+    room.engine.forfeit(player.token);
+  }));
+
   socket.on('disconnect', () => {
     const found = rooms.findBySocketId(socket.id);
     if (!found) return;

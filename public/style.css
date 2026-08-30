@@ -219,6 +219,22 @@ input[type="text"]::placeholder { color: #5c5968; }
 
 .btn-ghost:hover { background: rgba(255, 255, 255, 0.1); }
 
+.btn-danger {
+  background: linear-gradient(180deg, #d65454, var(--danger));
+  color: #fff;
+}
+
+.btn-danger:hover { filter: brightness(1.1); }
+
+.btn-forfeit {
+  font-size: 13px;
+  padding: 9px 14px;
+  color: var(--danger);
+  border-color: rgba(194, 59, 59, 0.35);
+}
+
+.btn-forfeit:hover { background: rgba(194, 59, 59, 0.12); }
+
 .form-error {
   color: var(--danger);
   font-size: 13px;
@@ -746,6 +762,10 @@ input[type="text"]::placeholder { color: #5c5968; }
 /* ---------- Responsive ---------- */
 
 @media (max-width: 760px) {
+  .game-header { gap: 8px; padding: 12px 14px; }
+  .brand-mini { font-size: 13px; }
+  .turn-indicator { font-size: 12px; }
+  .btn-forfeit { padding: 8px 10px; font-size: 11px; }
   .game-body { flex-direction: column; padding: 12px; }
   .log-panel {
     width: 100%;

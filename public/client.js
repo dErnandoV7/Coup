@@ -252,6 +252,8 @@
       ? ''
       : (state.turnPlayerId === state.you ? '<strong>É a sua vez</strong>' : `Vez de <strong>${turnPlayer ? turnPlayer.name : ''}</strong>`);
 
+    el('btn-forfeit').hidden = state.phase === 'game_over' || !myself || !myself.alive;
+
     el('players-table').innerHTML = state.players.map((p) => {
       const cls = ['player-card'];
       if (p.id === state.turnPlayerId && state.phase !== 'game_over') cls.push('is-turn');
@@ -386,7 +388,10 @@
     }
 
     const pending = state.pending;
-    if (!pending) { if (activeModalKey && !activeModalKey.startsWith('target:')) closeModal(); return; }
+    if (!pending) {
+      if (activeModalKey && !activeModalKey.startsWith('target:') && activeModalKey !== 'forfeit-confirm') closeModal();
+      return;
+    }
 
     const actorName = playerName(pending.actorId);
     const targetName = pending.targetId ? playerName(pending.targetId) : null;
@@ -563,5 +568,25 @@
 
   el('btn-toggle-log').addEventListener('click', () => {
     el('log-panel').classList.toggle('open');
+  });
+
+  el('btn-forfeit').addEventListener('click', () => {
+    if (!lastGameState) return;
+    const myself = me(lastGameState);
+    if (!myself || !myself.alive) return;
+    activeModalKey = 'forfeit-confirm';
+    openModal(`
+      <h2>Desistir da Partida</h2>
+      <p class="desc">Suas cartas serão reveladas e você sairá da partida, como ao desistir em um jogo presencial. Isso não pode ser desfeito.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-forfeit-cancel">Cancelar</button>
+        <button class="btn btn-danger" id="btn-forfeit-confirm">Desistir</button>
+      </div>
+    `);
+    modalContent.querySelector('#btn-forfeit-cancel').addEventListener('click', closeModal);
+    modalContent.querySelector('#btn-forfeit-confirm').addEventListener('click', () => {
+      socket.emit('forfeit');
+      closeModal();
+    });
   });
 })();

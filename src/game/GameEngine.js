@@ -319,7 +319,10 @@ class GameEngine {
     this.addLog(`${player.name} perdeu a influência: ${charName(character)}.`);
 
     if (this._checkWin()) return;
+    this._resumeAfterLoss(then);
+  }
 
+  _resumeAfterLoss(then) {
     switch (then.type) {
       case 'target_hit':
         this._advanceTurn();
@@ -415,6 +418,95 @@ class GameEngine {
 
     this.addLog(`${actor.name} trocou cartas com o baralho.`);
     this._advanceTurn();
+  }
+
+  // ---------- Forfeit ----------
+
+  // A player voluntarily leaves the table, exactly like conceding a
+  // real-life game: their hand is flipped face-up right away (all
+  // remaining influence revealed) and they're out for the rest of the
+  // match. Whatever the table was in the middle of doing keeps going in
+  // the most realistic way possible: a claim from someone who just quit
+  // can't be defended, so it simply doesn't hold up.
+  forfeit(playerId) {
+    if (this.phase === 'game_over') throw new Error('A partida já terminou.');
+    const player = this.getPlayer(playerId);
+    if (!player) throw new Error('Jogador não encontrado.');
+    if (!this.isAlive(player)) throw new Error('Você já não está na partida.');
+
+    const phase = this.phase;
+    const pending = this.pending;
+    const originalHidden = player.influence.filter((c) => !c.revealed).map((c) => c.character);
+
+    player.influence.forEach((c) => { c.revealed = true; });
+    this.addLog(`${player.name} desistiu da partida e revelou suas cartas.`);
+
+    if (this._checkWin()) return;
+
+    switch (phase) {
+      case 'awaiting_action':
+        if (!this.isAlive(this.currentPlayer())) this._advanceTurn();
+        break;
+
+      case 'challenge_action':
+      case 'block_window': {
+        if (pending.actorId === playerId || pending.targetId === playerId) {
+          this.addLog('A ação foi cancelada.');
+          this._advanceTurn();
+        } else {
+          const eligible = phase === 'block_window'
+            ? this._eligibleBlockers(pending)
+            : this._eligibleChallengers(pending.actorId);
+          const remaining = eligible.filter((id) => !pending.respondedIds.has(id));
+          if (remaining.length === 0) this._resolveWindowClear();
+        }
+        break;
+      }
+
+      case 'challenge_block': {
+        if (pending.actorId === playerId) {
+          this.addLog('A ação foi cancelada.');
+          this._advanceTurn();
+        } else if (pending.blockerId === playerId) {
+          if (pending.targetId === playerId) {
+            // Blocker was also the action's target (assassinate/steal) —
+            // they're already eliminated, so there's no one left to act on.
+            this.addLog('A ação foi cancelada: o alvo desistiu da partida.');
+            this._advanceTurn();
+          } else {
+            // foreign_aid: nothing left to defend the claim, so it collapses.
+            this.addLog('O bloqueio caiu, pois quem bloqueou desistiu da partida. A ação prossegue.');
+            this._applyEffect(pending);
+          }
+        } else {
+          const eligible = this._eligibleChallengers(pending.blockerId);
+          const remaining = eligible.filter((id) => !pending.respondedIds.has(id));
+          if (remaining.length === 0) this._resolveWindowClear();
+        }
+        break;
+      }
+
+      case 'awaiting_loss':
+        if (pending.awaitingLossPlayerId === playerId) this._resumeAfterLoss(pending.lossThen);
+        break;
+
+      case 'exchange_choice':
+        if (pending.actorId === playerId) {
+          // Only the freshly drawn cards go back to the deck — the
+          // player's original hand is already accounted for as revealed.
+          const options = [...pending.options];
+          for (const character of originalHidden) {
+            const idx = options.indexOf(character);
+            if (idx !== -1) options.splice(idx, 1);
+          }
+          this.deck.returnCards(options);
+          this._advanceTurn();
+        }
+        break;
+
+      default:
+        break;
+    }
   }
 
   // ---------- Serialization ----------
