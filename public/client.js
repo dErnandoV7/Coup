@@ -577,7 +577,7 @@
     activeModalKey = 'forfeit-confirm';
     openModal(`
       <h2>Desistir da Partida</h2>
-      <p class="desc">Suas cartas serão reveladas e você sairá da partida, como ao desistir em um jogo presencial. Isso não pode ser desfeito.</p>
+      <p class="desc">Suas cartas serão reveladas e você sairá definitivamente da partida. Isso não pode ser desfeito.</p>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="btn-forfeit-cancel">Cancelar</button>
         <button class="btn btn-danger" id="btn-forfeit-confirm">Desistir</button>
