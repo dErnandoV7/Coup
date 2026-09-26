@@ -31,6 +31,21 @@
       <form id="form-create" class="tab-panel active">
         <label>Seu nome</label>
         <input type="text" id="create-name" maxlength="20" placeholder="Ex: Marco" required />
+
+        <label>Modo de jogo</label>
+        <div class="option-group" id="mode-group">
+          <button type="button" class="option-btn active" data-value="classic">Clássico<small>Embaixador</small></button>
+          <button type="button" class="option-btn" data-value="reformation">Reformation<small>Inquisidor</small></button>
+        </div>
+
+        <label>Tempo por decisão</label>
+        <div class="option-group" id="timeout-group">
+          <button type="button" class="option-btn active" data-value="">Sem limite</button>
+          <button type="button" class="option-btn" data-value="15">15s</button>
+          <button type="button" class="option-btn" data-value="30">30s</button>
+          <button type="button" class="option-btn" data-value="60">60s</button>
+        </div>
+
         <button type="submit" class="btn btn-primary">Criar sala</button>
       </form>
 
@@ -49,6 +64,7 @@
       <p class="waiting-label">Código da sala</p>
       <div class="room-code" id="room-code-display"></div>
       <p class="hint">Compartilhe este código com quem vai jogar com você.</p>
+      <p class="room-config" id="room-config"></p>
       <ul class="lobby-players" id="lobby-players"></ul>
       <button class="btn btn-primary" id="btn-start" hidden>Iniciar Partida</button>
       <p class="hint" id="waiting-hint">Aguardando o anfitrião iniciar a partida…</p>
@@ -60,6 +76,8 @@
     <header class="game-header">
       <div class="brand-mini">♛ COUP</div>
       <div class="turn-indicator" id="turn-indicator"></div>
+      <button class="btn btn-primary btn-respond" id="btn-respond" hidden>Responder</button>
+      <button class="btn btn-ghost" id="btn-view-cards">Ver Cartas</button>
       <button class="btn btn-ghost btn-forfeit" id="btn-forfeit" hidden>Desistir</button>
       <button class="btn btn-ghost btn-log-toggle" id="btn-toggle-log">Histórico</button>
     </header>
@@ -70,8 +88,18 @@
       </div>
 
       <aside class="log-panel" id="log-panel">
-        <h3>Histórico</h3>
+        <div class="log-tabs">
+          <button class="log-tab active" data-tab="log">Histórico</button>
+          <button class="log-tab" data-tab="chat">Chat</button>
+        </div>
         <ul class="log-list" id="log-list"></ul>
+        <div class="chat-panel" id="chat-panel" hidden>
+          <ul class="chat-list" id="chat-list"></ul>
+          <form class="chat-form" id="chat-form">
+            <input type="text" id="chat-input" maxlength="300" placeholder="Mensagem…" autocomplete="off" />
+            <button type="submit" class="btn btn-primary">Enviar</button>
+          </form>
+        </div>
       </aside>
     </div>
 

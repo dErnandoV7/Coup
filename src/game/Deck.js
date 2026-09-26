@@ -1,9 +1,9 @@
 const { CHARACTERS, CARDS_PER_CHARACTER } = require('./constants');
 
 class Deck {
-  constructor() {
+  constructor(characters = CHARACTERS) {
     this.cards = [];
-    for (const character of CHARACTERS) {
+    for (const character of characters) {
       for (let i = 0; i < CARDS_PER_CHARACTER; i++) {
         this.cards.push(character);
       }

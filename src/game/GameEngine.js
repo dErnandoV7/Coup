@@ -2,9 +2,13 @@ const Deck = require('./Deck');
 const {
   ACTIONS,
   CHARACTER_INFO,
+  GAME_MODES,
+  DEFAULT_MODE,
   MUST_COUP_AT_COINS,
   STARTING_COINS,
   STARTING_INFLUENCE,
+  exchangeCharacterForMode,
+  blockedByForMode,
 } = require('./constants');
 
 function charName(character) {
@@ -17,8 +21,9 @@ function charName(character) {
  * player token (not the socket id, so refresh/reconnect keeps identity).
  */
 class GameEngine {
-  constructor(players) {
-    this.deck = new Deck();
+  constructor(players, mode = DEFAULT_MODE) {
+    this.mode = GAME_MODES[mode] ? mode : DEFAULT_MODE;
+    this.deck = new Deck(GAME_MODES[this.mode]);
     this.players = players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -26,12 +31,25 @@ class GameEngine {
       influence: this.deck.draw(STARTING_INFLUENCE).map((character) => ({ character, revealed: false })),
       connected: true,
     }));
-    this.turnIndex = 0;
-    this.phase = 'awaiting_action'; // awaiting_action | challenge_action | block_window | challenge_block | exchange_choice | awaiting_loss | game_over
+    // Who goes first is random — the host isn't seated first just for
+    // having created the room.
+    this.turnIndex = Math.floor(Math.random() * this.players.length);
+    this.phase = 'awaiting_action'; // awaiting_action | challenge_action | block_window | challenge_block | exchange_choice | awaiting_loss | examine_reveal | examine_decision | game_over
     this.pending = null;
     this.log = [];
     this.winnerId = null;
     this._checkStart();
+  }
+
+  // The character currently occupying the "trade with the deck" slot:
+  // ambassador in classic mode, inquisitor in reformation mode. Also the
+  // character that blocks stealing in place of ambassador.
+  _exchangeCharacter() {
+    return exchangeCharacterForMode(this.mode);
+  }
+
+  _blockedBy(actionName) {
+    return blockedByForMode(actionName, this.mode);
   }
 
   _checkStart() {
@@ -52,17 +70,14 @@ class GameEngine {
     if (player) player.connected = connected;
   }
 
-  // Called by the server after a grace period once a player has been
-  // disconnected the whole time, if the game is waiting specifically on
-  // their response (challenge/block window, or a decision only they can
-  // make). Resolves it on their behalf so the round doesn't hang forever
-  // waiting for someone who left. A quick refresh/reconnect never reaches
-  // this, since the server only calls it if the player is still offline
-  // once the grace period elapses.
-  autoResolveForDisconnected(playerId) {
+  // Resolves whatever this player currently owes the table with a safe
+  // default (pass / reveal the first available card / keep the first N
+  // options / show the first available card / decline to swap) — shared by
+  // both the disconnect grace-period path and the room's configured
+  // response-time-limit path below, so there's exactly one definition of
+  // "what a non-response defaults to" per phase.
+  _forceDefaultForPlayer(playerId) {
     if (this.phase === 'game_over' || !this.pending) return;
-    const disconnectedPlayer = this.getPlayer(playerId);
-    if (!disconnectedPlayer || disconnectedPlayer.connected) return;
     try {
       if (this.phase === 'challenge_action' || this.phase === 'block_window' || this.phase === 'challenge_block') {
         const eligible = this.phase === 'block_window'
@@ -78,9 +93,50 @@ class GameEngine {
       } else if (this.phase === 'exchange_choice' && this.pending.actorId === playerId) {
         const keepCount = this.getPlayer(playerId).influence.filter((c) => !c.revealed).length;
         this.exchangeChoice(playerId, this.pending.options.slice(0, keepCount));
+      } else if (this.phase === 'examine_reveal' && this.pending.targetId === playerId) {
+        const player = this.getPlayer(playerId);
+        const remaining = player.influence.filter((c) => !c.revealed);
+        if (remaining.length > 0) this.chooseExamineCard(playerId, remaining[0].character);
+      } else if (this.phase === 'examine_decision' && this.pending.actorId === playerId) {
+        this.examineDecision(playerId, false);
       }
     } catch (err) {
-      // best-effort: never let cleanup on disconnect crash the room
+      // best-effort: never let a forced default crash the room
+    }
+  }
+
+  // Called by the server after a grace period once a player has been
+  // disconnected the whole time, if the game is waiting specifically on
+  // their response. A quick refresh/reconnect never reaches this, since the
+  // server only calls it if the player is still offline once the grace
+  // period elapses.
+  autoResolveForDisconnected(playerId) {
+    const disconnectedPlayer = this.getPlayer(playerId);
+    if (!disconnectedPlayer || disconnectedPlayer.connected) return;
+    this._forceDefaultForPlayer(playerId);
+  }
+
+  // Called by the server when the room's configured response-time limit
+  // elapses for the *current* pending decision. Unlike autoResolveForDisconnected,
+  // this applies to anyone still owing a response — connected or not — since
+  // it's a table-wide clock, not a per-player disconnect grace period.
+  expireResponseWindow() {
+    if (this.phase === 'game_over' || !this.pending) return;
+    if (this.phase === 'challenge_action' || this.phase === 'block_window' || this.phase === 'challenge_block') {
+      const eligible = this.phase === 'block_window'
+        ? this._eligibleBlockers(this.pending)
+        : this._eligibleChallengers(this.phase === 'challenge_block' ? this.pending.blockerId : this.pending.actorId);
+      eligible
+        .filter((id) => !this.pending.respondedIds.has(id))
+        .forEach((id) => this._forceDefaultForPlayer(id));
+    } else if (this.phase === 'awaiting_loss') {
+      this._forceDefaultForPlayer(this.pending.awaitingLossPlayerId);
+    } else if (this.phase === 'exchange_choice') {
+      this._forceDefaultForPlayer(this.pending.actorId);
+    } else if (this.phase === 'examine_reveal') {
+      this._forceDefaultForPlayer(this.pending.targetId);
+    } else if (this.phase === 'examine_decision') {
+      this._forceDefaultForPlayer(this.pending.actorId);
     }
   }
 
@@ -135,6 +191,7 @@ class GameEngine {
 
     const action = ACTIONS[actionName];
     if (!action) throw new Error('Ação inválida.');
+    if (action.name === 'examine' && this.mode !== 'reformation') throw new Error('Ação inválida.');
 
     if (actor.coins >= MUST_COUP_AT_COINS && action.name !== 'coup') {
       throw new Error('Com 10 ou mais moedas você é obrigado a dar Golpe de Estado.');
@@ -155,7 +212,7 @@ class GameEngine {
       action: action.name,
       actorId: actor.id,
       targetId: target ? target.id : null,
-      claimedCharacter: action.character,
+      claimedCharacter: action.name === 'exchange' ? this._exchangeCharacter() : action.character,
     };
 
     const targetLabel = target ? ` em ${target.name}` : '';
@@ -234,8 +291,7 @@ class GameEngine {
     this._assertPhase('block_window');
     const eligible = this._eligibleBlockers(this.pending);
     if (!eligible.includes(playerId)) throw new Error('Você não pode bloquear esta ação.');
-    const action = ACTIONS[this.pending.action];
-    if (!action.blockedBy.includes(character)) throw new Error('Esse personagem não bloqueia essa ação.');
+    if (!this._blockedBy(this.pending.action).includes(character)) throw new Error('Esse personagem não bloqueia essa ação.');
 
     const blocker = this.getPlayer(playerId);
     this.addLog(`${blocker.name} bloqueou alegando ser ${charName(character)}.`);
@@ -389,6 +445,20 @@ class GameEngine {
         };
         break;
       }
+      case 'examine': {
+        const hidden = target.influence.filter((c) => !c.revealed);
+        const pendingBase = { action: 'examine', actorId: actor.id, targetId: target.id };
+        if (hidden.length <= 1) {
+          // Only one possible card: no real choice, skip straight to the
+          // inquisitor's decision.
+          this.phase = 'examine_decision';
+          this.pending = { ...pendingBase, examinedCharacter: hidden[0] ? hidden[0].character : null };
+        } else {
+          this.phase = 'examine_reveal';
+          this.pending = pendingBase;
+        }
+        break;
+      }
       default:
         this._advanceTurn();
     }
@@ -417,6 +487,46 @@ class GameEngine {
     ];
 
     this.addLog(`${actor.name} trocou cartas com o baralho.`);
+    this._advanceTurn();
+  }
+
+  // ---------- Inquisitor: examine ----------
+
+  // The examined player picks which of their two hidden cards to show the
+  // inquisitor (their own choice, same principle as choosing which card to
+  // lose) — auto-resolved by _applyEffect already when they only have one.
+  chooseExamineCard(playerId, character) {
+    this._assertPhase('examine_reveal');
+    if (this.pending.targetId !== playerId) throw new Error('Não é sua carta a ser examinada.');
+    const player = this.getPlayer(playerId);
+    const card = player.influence.find((c) => !c.revealed && c.character === character);
+    if (!card) throw new Error('Carta inválida.');
+    // Deliberately no public log of which character was shown — only the
+    // inquisitor gets to see it, exactly like the physical card handoff.
+    this.addLog(`${player.name} mostrou uma carta ao Inquisidor.`);
+    this.phase = 'examine_decision';
+    this.pending = { ...this.pending, examinedCharacter: character };
+  }
+
+  // The inquisitor decides whether to force the examined card to be swapped
+  // for a random one from the deck (blind to both players beforehand).
+  examineDecision(playerId, swap) {
+    this._assertPhase('examine_decision');
+    if (this.pending.actorId !== playerId) throw new Error('Não é sua decisão.');
+    const inquisitor = this.getPlayer(playerId);
+    const target = this.getPlayer(this.pending.targetId);
+    const character = this.pending.examinedCharacter;
+    const card = character ? target.influence.find((c) => !c.revealed && c.character === character) : null;
+
+    if (swap && card) {
+      this.deck.returnCards([card.character]);
+      const [replacement] = this.deck.draw(1);
+      target.influence = target.influence.filter((c) => c !== card);
+      target.influence.push({ character: replacement, revealed: false });
+      this.addLog(`${inquisitor.name} forçou ${target.name} a trocar uma carta com o baralho.`);
+    } else {
+      this.addLog(`${inquisitor.name} decidiu não trocar a carta de ${target.name}.`);
+    }
     this._advanceTurn();
   }
 
@@ -504,6 +614,27 @@ class GameEngine {
         }
         break;
 
+      case 'examine_reveal':
+        if (pending.targetId === playerId || pending.actorId === playerId) {
+          // Either the examined card is already fully public (target left,
+          // everything they had just got revealed above) or there's no one
+          // left to receive the private decision (inquisitor left) — either
+          // way, nothing private remains to resolve.
+          this.addLog('A ação foi cancelada.');
+          this._advanceTurn();
+        }
+        break;
+
+      case 'examine_decision':
+        if (pending.actorId === playerId || pending.targetId === playerId) {
+          // Inquisitor left before deciding, or the target's whole hand
+          // (including the examined card) just became public above — in
+          // both cases there's nothing meaningful left to swap.
+          this.addLog('A decisão do Inquisidor foi cancelada. Nada foi trocado.');
+          this._advanceTurn();
+        }
+        break;
+
       default:
         break;
     }
@@ -514,6 +645,7 @@ class GameEngine {
   getStateFor(playerId) {
     return {
       phase: this.phase,
+      mode: this.mode,
       turnPlayerId: this.currentPlayer().id,
       winnerId: this.winnerId,
       log: this.log.slice(-40),
@@ -556,6 +688,9 @@ class GameEngine {
     if (this.phase === 'exchange_choice' && p.actorId === playerId) {
       out.options = p.options;
       out.keepCount = this.getPlayer(playerId).influence.filter((c) => !c.revealed).length;
+    }
+    if (this.phase === 'examine_decision' && p.actorId === playerId) {
+      out.examinedCharacter = p.examinedCharacter;
     }
     return out;
   }

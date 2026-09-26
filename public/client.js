@@ -7,6 +7,7 @@
     captain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><path d="M12 7v13"/><path d="M6 12H2a10 10 0 0020 0h-4"/><path d="M8 12h8"/></svg>',
     ambassador: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13"/><path d="M14 4l3 4-3 4"/><path d="M20 16H7"/><path d="M10 12l-3 4 3 4"/></svg>',
     contessa: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z"/><path d="M9 12l2 2 4-4"/></svg>',
+    inquisitor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="6"/><path d="M20 20l-5.5-5.5"/></svg>',
   };
 
   const CHAR_META = {
@@ -30,6 +31,15 @@
       name: 'Condessa', light: 'var(--c-contessa)', dark: 'var(--c-contessa-dark)',
       desc: 'Sem ação própria. Bloqueio: impede um Assassinato sofrido.',
     },
+    inquisitor: {
+      name: 'Inquisidor', light: 'var(--c-inquisitor)', dark: 'var(--c-inquisitor-dark)',
+      desc: 'Ação Trocar: troca 1 carta com o baralho. Ação Inquirir: examina a carta oculta de um alvo, podendo forçar a troca dela. Bloqueio: impede uma Extorsão sofrida.',
+    },
+  };
+
+  const MODE_CHARACTERS = {
+    classic: ['duke', 'assassin', 'captain', 'ambassador', 'contessa'],
+    reformation: ['duke', 'assassin', 'captain', 'inquisitor', 'contessa'],
   };
 
   const PLAYER_LOG_COLORS = ['#6fb3ff', '#ff9a6f', '#7be08a', '#e08ae0', '#ffd76f', '#8ad9d0'];
@@ -47,7 +57,29 @@
     assassinate: { label: 'Assassinar', cost: 3, sub: 'Assassino · elimina 1 carta', requiresTarget: true, character: 'assassin', danger: true },
     steal: { label: 'Extorquir', cost: 0, sub: 'Capitão · rouba 2 moedas', requiresTarget: true, character: 'captain' },
     exchange: { label: 'Trocar', cost: 0, sub: 'Embaixador · troca cartas', requiresTarget: false, character: 'ambassador' },
+    examine: { label: 'Inquirir', cost: 0, sub: 'Inquisidor · investiga carta', requiresTarget: true, character: 'inquisitor' },
   };
+
+  // "Trocar" is claimed under a different character depending on the room's
+  // mode, and "Inquirir" only exists in reformation mode at all.
+  function actionsForMode(mode) {
+    const list = { ...ACTIONS_CLIENT };
+    if (mode === 'reformation') {
+      list.exchange = { ...list.exchange, sub: 'Inquisidor · troca cartas', character: 'inquisitor' };
+    } else {
+      delete list.examine;
+    }
+    return list;
+  }
+
+  function actionBlockedBy(actionName, mode) {
+    const map = {
+      foreign_aid: ['duke'],
+      assassinate: ['contessa'],
+      steal: ['captain', mode === 'reformation' ? 'inquisitor' : 'ambassador'],
+    };
+    return map[actionName] || [];
+  }
 
   const socket = io();
 
@@ -66,8 +98,10 @@
   let lastLobbyState = null;
   let lastGameState = null;
   let activeModalKey = null;
+  let peekedKey = null;
   let exchangeSelection = [];
   let toastTimer = null;
+  let wasKicked = false;
 
   // ---------- helpers ----------
 
@@ -127,10 +161,46 @@
     activeModalKey = null;
   }
 
-  function openModal(html) {
+  function openModal(html, { wide } = {}) {
     modalContent.innerHTML = html;
+    modalContent.classList.toggle('wide', !!wide);
     modalOverlay.hidden = false;
+    tickCountdowns();
   }
+
+  // Closes the current modal without treating it as a response, so the
+  // player can look at the board. The pending decision is remembered by
+  // `peekedKey` and stays closed until they explicitly reopen it.
+  function peekModal(key) {
+    peekedKey = key;
+    closeModal();
+    updateRespondButton();
+  }
+
+  function updateRespondButton() {
+    el('btn-respond').hidden = !peekedKey;
+  }
+
+  el('btn-respond').addEventListener('click', () => {
+    if (!peekedKey || !lastGameState) return;
+    peekedKey = null;
+    activeModalKey = null;
+    updateRespondButton();
+    syncModal(lastGameState, me(lastGameState));
+  });
+
+  function countdownHtml(state) {
+    if (!state.respondBy) return '';
+    return `<p class="modal-countdown" data-respond-by="${state.respondBy}"></p>`;
+  }
+
+  function tickCountdowns() {
+    document.querySelectorAll('.modal-countdown[data-respond-by]').forEach((cd) => {
+      const remaining = Math.max(0, Math.ceil((Number(cd.dataset.respondBy) - Date.now()) / 1000));
+      cd.textContent = `Tempo restante: ${remaining}s`;
+    });
+  }
+  setInterval(tickCountdowns, 1000);
 
   // ---------- lobby ----------
 
@@ -143,14 +213,33 @@
     });
   });
 
+  function wireOptionGroup(groupId) {
+    const group = el(groupId);
+    group.querySelectorAll('.option-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        group.querySelectorAll('.option-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+  }
+  wireOptionGroup('mode-group');
+  wireOptionGroup('timeout-group');
+
+  function selectedOption(groupId) {
+    const active = el(groupId).querySelector('.option-btn.active');
+    return active ? active.dataset.value : '';
+  }
+
   el('form-create').addEventListener('submit', (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
     if (btn.disabled) return;
     btn.disabled = true;
     const name = el('create-name').value.trim();
+    const mode = selectedOption('mode-group');
+    const responseTimeout = selectedOption('timeout-group') || null;
     lobbyError.hidden = true;
-    socket.emit('create_room', { playerName: name }, (res) => {
+    socket.emit('create_room', { playerName: name, mode, responseTimeout }, (res) => {
       btn.disabled = false;
       if (!res.ok) { lobbyError.textContent = res.error; lobbyError.hidden = false; return; }
       saveIdentity(res.roomCode, res.token);
@@ -195,7 +284,19 @@
     el('btn-start').disabled = false;
   });
 
+  socket.on('kicked', () => {
+    wasKicked = true;
+    clearIdentity();
+    openModal(`
+      <h2>Removido da Sala</h2>
+      <p class="desc">O anfitrião removeu você da sala.</p>
+      <div class="modal-actions"><button class="btn btn-primary" id="btn-kicked-ok">OK</button></div>
+    `);
+    modalContent.querySelector('#btn-kicked-ok').addEventListener('click', () => location.reload());
+  });
+
   socket.on('lobby_state', (state) => {
+    if (wasKicked) return;
     lastGameState = null;
     lastLobbyState = state;
     screenLobby.hidden = false;
@@ -205,16 +306,41 @@
     renderLobby(state);
   });
 
+  function confirmKick(token, name, midGame) {
+    openModal(`
+      <h2>Remover Jogador</h2>
+      <p class="desc">Remover <strong>${name}</strong> da sala${midGame ? ' e da partida' : ''}? ${midGame ? 'Todas as cartas dele serão reveladas e ele sairá da partida. ' : ''}Isso não pode ser desfeito.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-kick-cancel">Cancelar</button>
+        <button class="btn btn-danger" id="btn-kick-confirm">Remover</button>
+      </div>
+    `);
+    activeModalKey = 'kick-confirm';
+    modalContent.querySelector('#btn-kick-cancel').addEventListener('click', closeModal);
+    modalContent.querySelector('#btn-kick-confirm').addEventListener('click', () => {
+      socket.emit('kick_player', { targetToken: token });
+      closeModal();
+    });
+  }
+
   function renderLobby(state) {
     el('room-code-display').textContent = state.code;
     const isHost = state.you === state.hostToken;
+    const modeLabel = state.mode === 'reformation' ? 'Reformation (Inquisidor)' : 'Clássico (Embaixador)';
+    const timeoutLabel = state.responseTimeoutMs ? `${state.responseTimeoutMs / 1000}s por decisão` : 'Sem limite de tempo';
+    el('room-config').textContent = `${modeLabel} · ${timeoutLabel}`;
+
     el('lobby-players').innerHTML = state.players.map((p) => `
       <li>
         <span class="dot ${p.connected ? '' : 'offline'}"></span>
         <span>${escapeHtml(p.name)}${p.token === state.you ? ' (você)' : ''}</span>
         ${p.token === state.hostToken ? '<span class="host-tag">Anfitrião</span>' : ''}
+        ${isHost && p.token !== state.you ? `<button class="btn-kick" data-token="${p.token}" data-name="${escapeHtml(p.name)}">Remover</button>` : ''}
       </li>
     `).join('');
+    el('lobby-players').querySelectorAll('.btn-kick').forEach((btn) => {
+      btn.addEventListener('click', () => confirmKick(btn.dataset.token, btn.dataset.name, false));
+    });
 
     const startBtn = el('btn-start');
     const hint = el('waiting-hint');
@@ -233,6 +359,7 @@
   // ---------- game ----------
 
   socket.on('game_state', (state) => {
+    if (wasKicked) return;
     lastLobbyState = null;
     lastGameState = state;
     screenLobby.hidden = true;
@@ -254,27 +381,33 @@
 
     el('btn-forfeit').hidden = state.phase === 'game_over' || !myself || !myself.alive;
 
+    const isHost = state.you === state.hostToken;
     el('players-table').innerHTML = state.players.map((p) => {
       const cls = ['player-card'];
       if (p.id === state.turnPlayerId && state.phase !== 'game_over') cls.push('is-turn');
       if (p.id === state.you) cls.push('is-me');
       if (!p.alive) cls.push('is-dead');
 
-      const totalCards = p.influenceCount + p.revealedCards.length;
       const cardsHtml = [
-        ...p.revealedCards.map((c) => `<div class="mini-card revealed" style="--card-color:${CHAR_META[c].light}">${ICONS[c]}</div>`),
+        ...p.revealedCards.map((c) => `<div class="mini-card revealed" style="--card-color:${CHAR_META[c].light}">${ICONS[c]}<span class="mini-card-name">${CHAR_META[c].name}</span></div>`),
         ...Array.from({ length: p.influenceCount }, () => `<div class="mini-card">?</div>`),
       ].join('') || '<span style="color:var(--text-dim);font-size:12px">eliminado</span>';
+
+      const showKick = isHost && p.id !== state.you && p.alive && state.phase !== 'game_over';
 
       return `<div class="${cls.join(' ')}">
         <div class="player-name-row">
           <span class="dot ${p.connected ? '' : 'offline'}"></span>
           <span class="player-name">${escapeHtml(p.name)}${p.id === state.you ? ' (você)' : ''}</span>
+          ${showKick ? `<button class="btn-kick" data-token="${p.id}" data-name="${escapeHtml(p.name)}">Remover</button>` : ''}
         </div>
         <div class="player-coins"><span class="coin-icon"></span> ${p.coins}</div>
         <div class="mini-cards">${cardsHtml}</div>
       </div>`;
     }).join('');
+    el('players-table').querySelectorAll('.btn-kick').forEach((btn) => {
+      btn.addEventListener('click', () => confirmKick(btn.dataset.token, btn.dataset.name, true));
+    });
 
     if (myself && myself.cards) {
       el('my-cards').innerHTML = myself.cards.map((c) => characterCard(c.character, { revealed: c.revealed })).join('');
@@ -283,6 +416,7 @@
 
     renderActionBar(state, myself);
     renderLog(state);
+    renderChat(state);
     syncModal(state, myself);
   }
 
@@ -302,9 +436,36 @@
 
   function renderLog(state) {
     el('log-list').innerHTML = state.log.map((entry) => `<li>${colorizeLogText(entry.text, state)}</li>`).join('');
-    const panel = el('log-panel');
-    panel.scrollTop = panel.scrollHeight;
+    const list = el('log-list');
+    list.scrollTop = list.scrollHeight;
   }
+
+  function renderChat(state) {
+    const list = el('chat-list');
+    list.innerHTML = (state.chat || []).map((m) => `
+      <li><span class="log-player" style="color:${playerLogColor(m.token, state)}">${escapeHtml(m.name)}</span>: ${escapeHtml(m.text)}</li>
+    `).join('');
+    list.scrollTop = list.scrollHeight;
+  }
+
+  el('chat-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = el('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    socket.emit('chat_message', { text });
+    input.value = '';
+  });
+
+  document.querySelectorAll('.log-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.log-tab').forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      const isChat = tab.dataset.tab === 'chat';
+      el('log-list').hidden = isChat;
+      el('chat-panel').hidden = !isChat;
+    });
+  });
 
   function renderActionBar(state, myself) {
     const bar = el('action-bar');
@@ -321,7 +482,8 @@
     }
 
     const mustCoup = myself.coins >= 10;
-    bar.innerHTML = Object.entries(ACTIONS_CLIENT).map(([key, a]) => {
+    const actions = actionsForMode(state.mode);
+    bar.innerHTML = Object.entries(actions).map(([key, a]) => {
       const disabled = myself.coins < a.cost || (mustCoup && key !== 'coup');
       return `<button class="action-btn ${a.danger ? 'danger' : ''}" data-action="${key}" ${disabled ? 'disabled' : ''}>
         ${a.label}${a.cost ? ` (${a.cost})` : ''}
@@ -332,7 +494,7 @@
     bar.querySelectorAll('.action-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.action;
-        const meta = ACTIONS_CLIENT[key];
+        const meta = actions[key];
         if (meta.requiresTarget) {
           openTargetPicker(state, key);
         } else {
@@ -343,7 +505,7 @@
   }
 
   function openTargetPicker(state, actionKey) {
-    const meta = ACTIONS_CLIENT[actionKey];
+    const meta = actionsForMode(state.mode)[actionKey];
     const targets = state.players.filter((p) => p.alive && p.id !== state.you);
     openModal(`
       <h2>${meta.label}</h2>
@@ -372,6 +534,8 @@
       const key = 'game_over';
       if (activeModalKey === key) return;
       activeModalKey = key;
+      peekedKey = null;
+      updateRespondButton();
       const winner = state.players.find((p) => p.id === state.winnerId);
       openModal(`
         <h2>Fim de Jogo</h2>
@@ -389,7 +553,9 @@
 
     const pending = state.pending;
     if (!pending) {
-      if (activeModalKey && !activeModalKey.startsWith('target:') && activeModalKey !== 'forfeit-confirm') closeModal();
+      peekedKey = null;
+      updateRespondButton();
+      if (activeModalKey && !activeModalKey.startsWith('target:') && activeModalKey !== 'forfeit-confirm' && activeModalKey !== 'kick-confirm') closeModal();
       return;
     }
 
@@ -398,73 +564,93 @@
     const claimLabel = pending.claimedCharacter ? CHAR_META[pending.claimedCharacter].name : '';
 
     if (state.phase === 'challenge_action') {
-      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       const key = `challenge_action:${pending.actorId}:${pending.action}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
+      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       if (!eligible) {
+        if (peekedKey === key) { updateRespondButton(); return; }
         if (state.you === pending.actorId || pending.respondedIds.includes(state.you)) {
-          showStatusModal('challenge_action_wait', `${actorName} alega ser ${claimLabel} para usar ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}.`, waitingListText(pending, state));
+          showStatusModal(key, `${actorName} alega ser ${claimLabel} para usar ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}.`, waitingListText(pending, state), state);
         }
         return;
       }
+      if (peekedKey === key) { updateRespondButton(); return; }
       if (activeModalKey === key) return;
       activeModalKey = key;
       openModal(`
         <h2>Desafio</h2>
         <p class="desc">${actorName} alega ser <strong>${claimLabel}</strong> para usar ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}. Você acredita?</p>
+        ${countdownHtml(state)}
         <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-peek">Fechar</button>
           <button class="btn btn-ghost" id="btn-pass">Passar</button>
           <button class="btn btn-primary" id="btn-challenge">Desafiar</button>
         </div>
       `);
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
       modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
       modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); });
       return;
     }
 
     if (state.phase === 'block_window') {
-      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
-      const blockChars = (ACTIONS_CLIENT[pending.action] && actionBlockedBy(pending.action)) || [];
       const key = `block_window:${pending.actorId}:${pending.action}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
+      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
+      const blockChars = actionBlockedBy(pending.action, state.mode);
       if (!eligible) {
-        showStatusModal('block_window_wait', `${actorName} usou ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}. Aguardando decisão sobre bloqueio…`, waitingListText(pending, state));
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${actorName} usou ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}. Aguardando decisão sobre bloqueio…`, waitingListText(pending, state), state);
         return;
       }
+      if (peekedKey === key) { updateRespondButton(); return; }
       if (activeModalKey === key) return;
       activeModalKey = key;
       openModal(`
         <h2>Bloquear?</h2>
         <p class="desc">${actorName} usou ${actionLabel(pending.action)}${targetName ? ` em você` : ''}. Deseja bloquear alegando um personagem?</p>
+        ${countdownHtml(state)}
         <div class="modal-choices">
           ${blockChars.map((c) => `<button class="choice-card" data-char="${c}" style="--card-color-light:${CHAR_META[c].light};--card-color-dark:${CHAR_META[c].dark}"><div class="hc-icon">${ICONS[c]}</div><div>${CHAR_META[c].name}</div></button>`).join('')}
         </div>
-        <div class="modal-actions"><button class="btn btn-ghost" id="btn-pass">Passar</button></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-peek">Fechar</button>
+          <button class="btn btn-ghost" id="btn-pass">Passar</button>
+        </div>
       `);
       modalContent.querySelectorAll('.choice-card').forEach((b) => {
         b.addEventListener('click', () => { socket.emit('block', { character: b.dataset.char }); });
       });
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
       modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
       return;
     }
 
     if (state.phase === 'challenge_block') {
       const blockerName = playerName(pending.blockerId);
-      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       const key = `challenge_block:${pending.blockerId}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
+      const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       const claimBlock = CHAR_META[pending.blockCharacter].name;
       if (!eligible) {
-        showStatusModal('challenge_block_wait', `${blockerName} alega ser ${claimBlock} para bloquear a ação de ${actorName}.`, waitingListText(pending, state));
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${blockerName} alega ser ${claimBlock} para bloquear a ação de ${actorName}.`, waitingListText(pending, state), state);
         return;
       }
+      if (peekedKey === key) { updateRespondButton(); return; }
       if (activeModalKey === key) return;
       activeModalKey = key;
       openModal(`
         <h2>Desafiar Bloqueio</h2>
         <p class="desc">${blockerName} alega ser <strong>${claimBlock}</strong> para bloquear ${actorName}. Você acredita?</p>
+        ${countdownHtml(state)}
         <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-peek">Fechar</button>
           <button class="btn btn-ghost" id="btn-pass">Passar</button>
           <button class="btn btn-primary" id="btn-challenge">Desafiar</button>
         </div>
       `);
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
       modalContent.querySelector('#btn-pass').addEventListener('click', () => { socket.emit('pass'); });
       modalContent.querySelector('#btn-challenge').addEventListener('click', () => { socket.emit('challenge'); });
       return;
@@ -472,44 +658,104 @@
 
     if (state.phase === 'awaiting_loss') {
       const key = `loss:${pending.awaitingLossPlayerId}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.awaitingLossPlayerId !== state.you) {
-        showStatusModal('loss_wait', `${playerName(pending.awaitingLossPlayerId)} precisa revelar uma influência…`, '');
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${playerName(pending.awaitingLossPlayerId)} precisa revelar uma influência…`, '', state);
         return;
       }
+      if (peekedKey === key) { updateRespondButton(); return; }
       if (activeModalKey === key) return;
       activeModalKey = key;
       const options = myself.cards.filter((c) => !c.revealed);
       openModal(`
         <h2>Perder Influência</h2>
         <p class="desc">Escolha qual carta revelar. Ela será perdida.</p>
+        ${countdownHtml(state)}
         <div class="modal-choices">
           ${options.map((c) => choiceCardHtml(c.character, c.character)).join('')}
         </div>
+        <div class="modal-actions"><button class="btn btn-ghost" id="btn-peek">Fechar</button></div>
       `);
       modalContent.querySelectorAll('.choice-card').forEach((b) => {
         b.addEventListener('click', () => { socket.emit('lose_influence', { character: b.dataset.index }); });
       });
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
       return;
     }
 
     if (state.phase === 'exchange_choice') {
+      const key = `exchange:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.actorId !== state.you) {
-        showStatusModal('exchange_wait', `${actorName} está escolhendo cartas na troca com o Embaixador…`, '');
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${actorName} está escolhendo cartas na troca…`, '', state);
         return;
       }
-      const key = `exchange:${state.log.length}`;
+      if (peekedKey === key) { updateRespondButton(); return; }
       if (activeModalKey !== key) {
         activeModalKey = key;
         exchangeSelection = [];
       }
-      renderExchangeModal(pending);
+      renderExchangeModal(pending, key, state);
       return;
     }
-  }
 
-  function actionBlockedBy(actionName) {
-    const map = { foreign_aid: ['duke'], assassinate: ['contessa'], steal: ['captain', 'ambassador'] };
-    return map[actionName] || [];
+    if (state.phase === 'examine_reveal') {
+      const key = `examine_reveal:${pending.targetId}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
+      if (pending.targetId !== state.you) {
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${playerName(pending.targetId)} está escolhendo uma carta para mostrar ao Inquisidor…`, '', state);
+        return;
+      }
+      if (peekedKey === key) { updateRespondButton(); return; }
+      if (activeModalKey === key) return;
+      activeModalKey = key;
+      const options = myself.cards.filter((c) => !c.revealed);
+      openModal(`
+        <h2>Inquisidor</h2>
+        <p class="desc">${actorName} está usando o Inquisidor para investigar você. Escolha qual carta mostrar (não será perdida, apenas revelada a ${actorName}).</p>
+        ${countdownHtml(state)}
+        <div class="modal-choices">
+          ${options.map((c) => choiceCardHtml(c.character, c.character)).join('')}
+        </div>
+        <div class="modal-actions"><button class="btn btn-ghost" id="btn-peek">Fechar</button></div>
+      `);
+      modalContent.querySelectorAll('.choice-card').forEach((b) => {
+        b.addEventListener('click', () => { socket.emit('choose_examine_card', { character: b.dataset.index }); });
+      });
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
+      return;
+    }
+
+    if (state.phase === 'examine_decision') {
+      const key = `examine_decision:${pending.actorId}:${state.log.length}`;
+      if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
+      if (pending.actorId !== state.you) {
+        if (peekedKey === key) { updateRespondButton(); return; }
+        showStatusModal(key, `${actorName} está decidindo se troca a carta de ${targetName}…`, '', state);
+        return;
+      }
+      if (peekedKey === key) { updateRespondButton(); return; }
+      if (activeModalKey === key) return;
+      activeModalKey = key;
+      const shown = pending.examinedCharacter;
+      openModal(`
+        <h2>Decisão do Inquisidor</h2>
+        <p class="desc">${targetName} mostrou: <strong>${shown ? CHAR_META[shown].name : '?'}</strong>. Deseja forçar a troca dessa carta com o baralho?</p>
+        ${countdownHtml(state)}
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-peek">Fechar</button>
+          <button class="btn btn-ghost" id="btn-keep">Deixar</button>
+          <button class="btn btn-primary" id="btn-swap">Trocar</button>
+        </div>
+      `);
+      modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
+      modalContent.querySelector('#btn-keep').addEventListener('click', () => { socket.emit('examine_decision', { swap: false }); });
+      modalContent.querySelector('#btn-swap').addEventListener('click', () => { socket.emit('examine_decision', { swap: true }); });
+      return;
+    }
   }
 
   function waitingListText(pending, state) {
@@ -518,7 +764,7 @@
     return `Aguardando: ${waitingFor.map(playerName).join(', ')}`;
   }
 
-  function showStatusModal(key, desc, status) {
+  function showStatusModal(key, desc, status, state) {
     if (activeModalKey === key) {
       const statusEl = modalContent.querySelector('.modal-status');
       if (statusEl) statusEl.textContent = status;
@@ -529,18 +775,23 @@
       <h2>Aguarde</h2>
       <p class="desc">${desc}</p>
       <p class="modal-status">${status}</p>
+      ${countdownHtml(state)}
+      <div class="modal-actions" style="margin-top:14px"><button class="btn btn-ghost" id="btn-peek">Fechar</button></div>
     `);
+    modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
   }
 
-  function renderExchangeModal(pending) {
+  function renderExchangeModal(pending, key, state) {
     const keepCount = pending.keepCount;
     openModal(`
       <h2>Trocar Cartas</h2>
       <p class="desc">Escolha ${keepCount} ${keepCount === 1 ? 'carta' : 'cartas'} para manter.</p>
+      ${countdownHtml(state)}
       <div class="modal-choices" id="exchange-choices">
         ${pending.options.map((c, i) => choiceCardHtml(c, i)).join('')}
       </div>
       <div class="modal-actions">
+        <button class="btn btn-ghost" id="btn-peek">Fechar</button>
         <button class="btn btn-primary" id="btn-confirm-exchange" ${exchangeSelection.length === keepCount ? '' : 'disabled'}>Confirmar</button>
       </div>
     `);
@@ -555,9 +806,10 @@
         } else if (exchangeSelection.length < keepCount) {
           exchangeSelection.push(idx);
         }
-        renderExchangeModal(pending);
+        renderExchangeModal(pending, key, state);
       });
     });
+    modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
     const confirmBtn = modalContent.querySelector('#btn-confirm-exchange');
     confirmBtn.disabled = exchangeSelection.length !== keepCount;
     confirmBtn.addEventListener('click', () => {
@@ -565,6 +817,31 @@
       socket.emit('exchange_choice', { keep });
     });
   }
+
+  function showReferenceModal(mode) {
+    activeModalKey = 'ref-cards';
+    const chars = MODE_CHARACTERS[mode] || MODE_CHARACTERS.classic;
+    openModal(`
+      <h2>Personagens</h2>
+      <p class="desc">Modo: ${mode === 'reformation' ? 'Reformation' : 'Clássico'}</p>
+      <div class="reference-grid">
+        ${chars.map((c) => `
+          <div class="reference-card" style="--card-color-light:${CHAR_META[c].light};--card-color-dark:${CHAR_META[c].dark}">
+            <div class="hc-icon">${ICONS[c]}</div>
+            <div class="ref-name">${CHAR_META[c].name}</div>
+            <div class="ref-desc">${escapeHtml(CHAR_META[c].desc)}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="modal-actions"><button class="btn btn-ghost" id="btn-close-ref">Fechar</button></div>
+    `, { wide: true });
+    modalContent.querySelector('#btn-close-ref').addEventListener('click', closeModal);
+  }
+
+  el('btn-view-cards').addEventListener('click', () => {
+    if (!lastGameState) return;
+    showReferenceModal(lastGameState.mode);
+  });
 
   el('btn-toggle-log').addEventListener('click', () => {
     el('log-panel').classList.toggle('open');

@@ -11,7 +11,15 @@ const io = new Server(server);
 const rooms = new RoomManager();
 const DISCONNECT_GRACE_MS = 15000;
 
-app.use(express.static(path.join(__dirname, 'public')));
+// Static assets (client.js/style.css/index.html) must never be served from a
+// stale browser cache — an old cached client talking to a freshly-updated
+// server is exactly the kind of thing that can make two players see
+// different things for the same game state.
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-store'),
+}));
 
 function broadcastLobby(room) {
   const state = room.publicLobbyState();
@@ -22,14 +30,77 @@ function broadcastLobby(room) {
 
 function broadcastGame(room) {
   for (const p of room.players) {
-    if (p.socketId) io.to(p.socketId).emit('game_state', { ...room.engine.getStateFor(p.token), you: p.token, hostToken: room.hostToken });
+    if (p.socketId) {
+      io.to(p.socketId).emit('game_state', {
+        ...room.engine.getStateFor(p.token),
+        you: p.token,
+        hostToken: room.hostToken,
+        chat: room.chat,
+        respondBy: room.responseDeadline,
+      });
+    }
   }
 }
 
 function broadcast(room) {
-  if (room.started) broadcastGame(room);
-  else broadcastLobby(room);
-  if (room.started) scheduleTurnWatchdog(room);
+  if (room.started) {
+    // Must run before broadcastGame: it sets room.responseDeadline for the
+    // *current* pending decision, which broadcastGame then reads to tell
+    // clients when to stop counting down.
+    scheduleResponseTimeout(room);
+    scheduleTurnWatchdog(room);
+    broadcastGame(room);
+  } else {
+    broadcastLobby(room);
+  }
+}
+
+// ---------- Response time limit ----------
+
+const DECISION_PHASES = new Set([
+  'challenge_action', 'block_window', 'challenge_block',
+  'awaiting_loss', 'exchange_choice', 'examine_reveal', 'examine_decision',
+]);
+
+function pendingFingerprint(room) {
+  return `${room.engine.phase}:${room.engine.log.length}`;
+}
+
+function clearPendingTimeout(room) {
+  if (room.pendingTimeout) {
+    clearTimeout(room.pendingTimeout.timer);
+    room.pendingTimeout = null;
+  }
+  room.responseDeadline = null;
+}
+
+// If the host picked a response time limit, force-resolve whoever still owes
+// a response once it elapses (same safe defaults used for a disconnected
+// player), so nobody can stall the table forever. A running timer for the
+// exact same pending decision is left alone — this only (re)schedules when
+// the fingerprint actually changes (a genuinely new decision, or the window
+// closed entirely).
+function scheduleResponseTimeout(room) {
+  if (!room.responseTimeoutMs || !DECISION_PHASES.has(room.engine.phase)) {
+    clearPendingTimeout(room);
+    return;
+  }
+  const fingerprint = pendingFingerprint(room);
+  if (room.pendingTimeout && room.pendingTimeout.fingerprint === fingerprint) return;
+  clearPendingTimeout(room);
+  room.responseDeadline = Date.now() + room.responseTimeoutMs;
+  const timer = setTimeout(() => {
+    if (!room.started || pendingFingerprint(room) !== fingerprint) return;
+    try {
+      room.engine.expireResponseWindow();
+    } catch (err) {
+      // best-effort: never let the timeout crash the room
+    }
+    room.pendingTimeout = null;
+    room.responseDeadline = null;
+    broadcast(room);
+  }, room.responseTimeoutMs);
+  room.pendingTimeout = { fingerprint, timer };
 }
 
 // If it becomes a disconnected player's own turn, nobody else can act for
@@ -77,8 +148,9 @@ io.on('connection', (socket) => {
     };
   }
 
-  socket.on('create_room', safeLobbyHandler(({ playerName }, ack) => {
-    const room = rooms.createRoom();
+  socket.on('create_room', safeLobbyHandler(({ playerName, mode, responseTimeout }, ack) => {
+    const timeoutMs = responseTimeout ? Number(responseTimeout) * 1000 : null;
+    const room = rooms.createRoom(mode, timeoutMs);
     const player = rooms.addPlayer(room, playerName, socket.id);
     socket.join(room.code);
     ack && ack({ ok: true, roomCode: room.code, token: player.token });
@@ -168,6 +240,45 @@ io.on('connection', (socket) => {
 
   socket.on('forfeit', withGame((room, player) => {
     room.engine.forfeit(player.token);
+  }));
+
+  socket.on('choose_examine_card', withGame((room, player, { character }) => {
+    room.engine.chooseExamineCard(player.token, character);
+  }));
+
+  socket.on('examine_decision', withGame((room, player, { swap }) => {
+    room.engine.examineDecision(player.token, !!swap);
+  }));
+
+  socket.on('chat_message', withGame((room, player, { text }) => {
+    const trimmed = typeof text === 'string' ? text.trim().slice(0, 300) : '';
+    if (!trimmed) return;
+    room.chat.push({ name: player.name, token: player.token, text: trimmed, ts: Date.now() });
+    if (room.chat.length > 50) room.chat.shift();
+  }));
+
+  socket.on('kick_player', safeLobbyHandler(({ targetToken }, ack) => {
+    const found = rooms.findBySocketId(socket.id);
+    if (!found) return;
+    const { room, player } = found;
+    if (room.hostToken !== player.token) return sendError(socket, 'Só o anfitrião pode remover jogadores.');
+    if (targetToken === player.token) return sendError(socket, 'Você não pode remover a si mesmo.');
+    const target = rooms.findPlayerByToken(room, targetToken);
+    if (!target) return;
+
+    if (room.started) {
+      try {
+        room.engine.forfeit(targetToken);
+      } catch (err) {
+        return sendError(socket, err.message);
+      }
+    } else {
+      rooms.removePlayer(room, targetToken);
+    }
+
+    if (target.socketId) io.to(target.socketId).emit('kicked');
+    broadcast(room);
+    if (!room.started) rooms.removeRoomIfEmpty(room);
   }));
 
   socket.on('disconnect', () => {
