@@ -36,6 +36,7 @@ class Room {
     this.chat = []; // { name, text, ts }, only used once the game has started
     this.pendingTimeout = null; // { fingerprint, timer } — see server.js scheduleResponseTimeout
     this.responseDeadline = null; // epoch ms, sent to clients for a countdown display
+    this.joinRequests = []; // { id, name, socketId } — aguardando o anfitrião aceitar
   }
 
   get started() {
@@ -88,6 +89,18 @@ class RoomManager {
     return player;
   }
 
+  // Remove os pedidos de entrada feitos por este socket (desistiu, caiu ou
+  // pediu para outra sala). Devolve as salas afetadas, para atualizar o anfitrião.
+  removeJoinRequestsBySocket(socketId) {
+    const affected = [];
+    for (const room of this.rooms.values()) {
+      const before = room.joinRequests.length;
+      room.joinRequests = room.joinRequests.filter((r) => r.socketId !== socketId);
+      if (room.joinRequests.length !== before) affected.push(room);
+    }
+    return affected;
+  }
+
   findPlayerByToken(room, token) {
     return room.players.find((p) => p.token === token);
   }
@@ -128,9 +141,11 @@ class RoomManager {
     return room.engine;
   }
 
+  // Devolve true se a sala foi removida.
   removeRoomIfEmpty(room) {
     const anyConnected = room.players.some((p) => p.connected);
     if (!anyConnected) this.rooms.delete(room.code);
+    return !anyConnected;
   }
 }
 

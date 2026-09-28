@@ -88,6 +88,7 @@
   const screenGame = el('screen-game');
   const lobbyForms = el('lobby-forms');
   const waitingRoom = el('waiting-room');
+  const joinPending = el('join-pending');
   const lobbyError = el('lobby-error');
   const modalOverlay = el('modal-overlay');
   const modalContent = el('modal-content');
@@ -260,8 +261,37 @@
     socket.emit('join_room', { playerName: name, roomCode: code }, (res) => {
       btn.disabled = false;
       if (!res.ok) { lobbyError.textContent = res.error; lobbyError.hidden = false; return; }
-      saveIdentity(res.roomCode, res.token);
+      // Entrada depende do anfitrião: espera join_accepted / join_rejected.
+      el('join-pending-code').textContent = res.roomCode;
+      lobbyForms.hidden = true;
+      joinPending.hidden = false;
     });
+  });
+
+  function leaveJoinPending(errorMessage) {
+    if (joinPending.hidden) return;
+    joinPending.hidden = true;
+    lobbyForms.hidden = false;
+    if (errorMessage) { lobbyError.textContent = errorMessage; lobbyError.hidden = false; }
+  }
+
+  el('btn-cancel-join').addEventListener('click', () => {
+    socket.emit('cancel_join');
+    leaveJoinPending(null);
+  });
+
+  socket.on('join_accepted', ({ roomCode, token }) => {
+    joinPending.hidden = true;
+    saveIdentity(roomCode, token); // a tela da sala chega logo em seguida via lobby_state
+  });
+
+  socket.on('join_rejected', ({ message } = {}) => {
+    leaveJoinPending(message || 'Sua entrada na sala foi recusada.');
+  });
+
+  // Cair a conexão cancela o pedido no servidor; sem isso a tela ficaria esperando para sempre.
+  socket.on('disconnect', () => {
+    leaveJoinPending('A conexão caiu e o pedido foi cancelado. Tente entrar de novo.');
   });
 
   el('btn-start').addEventListener('click', () => {
@@ -330,6 +360,7 @@
     screenLobby.hidden = false;
     screenGame.hidden = true;
     lobbyForms.hidden = true;
+    joinPending.hidden = true;
     waitingRoom.hidden = false;
     renderLobby(state);
   });
@@ -368,6 +399,22 @@
     `).join('');
     el('lobby-players').querySelectorAll('.btn-kick').forEach((btn) => {
       btn.addEventListener('click', () => confirmKick(btn.dataset.token, btn.dataset.name, false));
+    });
+
+    const requests = state.joinRequests || [];
+    el('join-requests').hidden = !isHost || requests.length === 0;
+    el('join-requests-list').innerHTML = requests.map((r) => `
+      <li>
+        <span class="join-request-name">${escapeHtml(r.name)}</span>
+        <button class="btn-accept" data-id="${escapeHtml(r.id)}">Aceitar</button>
+        <button class="btn-reject" data-id="${escapeHtml(r.id)}">Recusar</button>
+      </li>
+    `).join('');
+    el('join-requests-list').querySelectorAll('.btn-accept, .btn-reject').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        btn.closest('li').querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        socket.emit('respond_join', { requestId: btn.dataset.id, accept: btn.classList.contains('btn-accept') });
+      });
     });
 
     const startBtn = el('btn-start');

@@ -60,12 +60,23 @@
       <p class="form-error" id="lobby-error" hidden></p>
     </div>
 
+    <div class="panel waiting-room" id="join-pending" hidden>
+      <p class="waiting-label">Código da sala</p>
+      <div class="room-code" id="join-pending-code"></div>
+      <p class="hint">Pedido enviado. Aguardando o anfitrião aceitar sua entrada…</p>
+      <button class="btn btn-ghost" id="btn-cancel-join" style="margin-top:18px">Cancelar</button>
+    </div>
+
     <div class="panel waiting-room" id="waiting-room" hidden>
       <p class="waiting-label">Código da sala</p>
       <div class="room-code" id="room-code-display"></div>
       <p class="hint">Compartilhe este código com quem vai jogar com você.</p>
       <p class="room-config" id="room-config"></p>
       <ul class="lobby-players" id="lobby-players"></ul>
+      <div class="join-requests" id="join-requests" hidden>
+        <p class="waiting-label">Pedidos para entrar</p>
+        <ul class="lobby-players" id="join-requests-list"></ul>
+      </div>
       <button class="btn btn-primary" id="btn-start" hidden>Iniciar Partida</button>
       <p class="hint" id="waiting-hint">Aguardando o anfitrião iniciar a partida…</p>
     </div>

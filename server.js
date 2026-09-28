@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
 const express = require('express');
@@ -10,6 +11,8 @@ const server = http.createServer(app);
 const io = new Server(server);
 const rooms = new RoomManager();
 const DISCONNECT_GRACE_MS = 15000;
+const MAX_PLAYERS = 6;
+const MAX_JOIN_REQUESTS = 10;
 
 // Static assets (client.js/style.css/index.html) must never be served from a
 // stale browser cache — an old cached client talking to a freshly-updated
@@ -23,8 +26,15 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 function broadcastLobby(room) {
   const state = room.publicLobbyState();
+  const requests = room.joinRequests.map((r) => ({ id: r.id, name: r.name }));
   for (const p of room.players) {
-    if (p.socketId) io.to(p.socketId).emit('lobby_state', { ...state, you: p.token });
+    if (!p.socketId) continue;
+    // Só o anfitrião vê (e decide) os pedidos de entrada.
+    io.to(p.socketId).emit('lobby_state', {
+      ...state,
+      you: p.token,
+      joinRequests: p.token === room.hostToken ? requests : [],
+    });
   }
 }
 
@@ -194,6 +204,16 @@ function sendError(socket, message) {
   socket.emit('error_message', message);
 }
 
+// Recusa todos os pedidos de entrada ainda pendentes (partida começou ou sala fechou).
+function rejectAllJoinRequests(room, message) {
+  for (const r of room.joinRequests) io.to(r.socketId).emit('join_rejected', { message });
+  room.joinRequests = [];
+}
+
+function cancelJoinRequestsFrom(socketId) {
+  for (const room of rooms.removeJoinRequestsBySocket(socketId)) broadcast(room);
+}
+
 io.on('connection', (socket) => {
   // Wraps a lobby-phase handler so a malformed/unexpected payload from any
   // one client can never throw uncaught and take the whole server down for
@@ -221,11 +241,46 @@ io.on('connection', (socket) => {
     const room = rooms.getRoom(roomCode);
     if (!room) return ack && ack({ ok: false, error: 'Sala não encontrada.' });
     if (room.started) return ack && ack({ ok: false, error: 'A partida já começou.' });
-    if (room.players.length >= 6) return ack && ack({ ok: false, error: 'Sala cheia (máx. 6 jogadores).' });
+    if (room.players.length >= MAX_PLAYERS) return ack && ack({ ok: false, error: 'Sala cheia (máx. 6 jogadores).' });
 
-    const player = rooms.addPlayer(room, playerName, socket.id);
-    socket.join(room.code);
-    ack && ack({ ok: true, roomCode: room.code, token: player.token });
+    // Não entra direto: o pedido vai para o anfitrião aceitar ou recusar.
+    cancelJoinRequestsFrom(socket.id);
+    if (room.joinRequests.length >= MAX_JOIN_REQUESTS) {
+      return ack && ack({ ok: false, error: 'Muitos pedidos pendentes nesta sala. Tente de novo em instantes.' });
+    }
+    const name = (typeof playerName === 'string' ? playerName : '').trim().slice(0, 20) || 'Jogador';
+    room.joinRequests.push({ id: crypto.randomUUID(), name, socketId: socket.id });
+    ack && ack({ ok: true, pending: true, roomCode: room.code });
+    broadcast(room);
+  }));
+
+  socket.on('cancel_join', safeLobbyHandler(() => {
+    cancelJoinRequestsFrom(socket.id);
+  }));
+
+  socket.on('respond_join', safeLobbyHandler(({ requestId, accept }) => {
+    const found = rooms.findBySocketId(socket.id);
+    if (!found) return;
+    const { room, player } = found;
+    if (room.hostToken !== player.token) return sendError(socket, 'Só o anfitrião pode aceitar jogadores.');
+    const request = room.joinRequests.find((r) => r.id === requestId);
+    if (!request) return; // quem pediu já desistiu ou caiu
+    room.joinRequests = room.joinRequests.filter((r) => r !== request);
+
+    const requester = io.sockets.sockets.get(request.socketId);
+    if (!requester) return broadcast(room);
+    let refusal = null;
+    if (!accept) refusal = 'O anfitrião recusou sua entrada na sala.';
+    else if (room.started) refusal = 'A partida já começou.';
+    else if (room.players.length >= MAX_PLAYERS) refusal = 'Sala cheia (máx. 6 jogadores).';
+    if (refusal) {
+      requester.emit('join_rejected', { message: refusal });
+      return broadcast(room);
+    }
+
+    const newPlayer = rooms.addPlayer(room, request.name, request.socketId);
+    requester.join(room.code);
+    requester.emit('join_accepted', { roomCode: room.code, token: newPlayer.token });
     broadcast(room);
   }));
 
@@ -251,6 +306,7 @@ io.on('connection', (socket) => {
     if (room.hostToken !== player.token) return sendError(socket, 'Só o anfitrião pode iniciar.');
     try {
       rooms.startGame(room);
+      rejectAllJoinRequests(room, 'A partida já começou.');
       broadcast(room);
     } catch (err) {
       sendError(socket, err.message);
@@ -353,10 +409,11 @@ io.on('connection', (socket) => {
 
     if (target.socketId) io.to(target.socketId).emit('kicked');
     broadcast(room);
-    if (!room.started) rooms.removeRoomIfEmpty(room);
+    if (!room.started && rooms.removeRoomIfEmpty(room)) rejectAllJoinRequests(room, 'A sala foi encerrada.');
   }));
 
   socket.on('disconnect', () => {
+    cancelJoinRequestsFrom(socket.id);
     const found = rooms.findBySocketId(socket.id);
     if (!found) return;
     const { room, player } = found;
@@ -365,7 +422,7 @@ io.on('connection', (socket) => {
     if (room.started) room.engine.setConnected(player.token, false);
     else rooms.reassignHostIfNeeded(room);
     broadcast(room);
-    rooms.removeRoomIfEmpty(room);
+    if (rooms.removeRoomIfEmpty(room)) rejectAllJoinRequests(room, 'A sala foi encerrada.');
 
     // Give a quick refresh/reconnect a fair chance before treating this as
     // an abandonment: only auto-resolve a pending decision on this player's
