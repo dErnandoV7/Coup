@@ -37,6 +37,10 @@ class GameEngine {
     this.phase = 'awaiting_action'; // awaiting_action | challenge_action | block_window | challenge_block | exchange_choice | awaiting_loss | examine_reveal | examine_decision | game_over
     this.pending = null;
     this.log = [];
+    // Total de entradas já registradas. Diferente de log.length (que para de
+    // crescer quando o histórico é cortado), nunca se repete — por isso é o
+    // que identifica cada decisão pendente no servidor e no cliente.
+    this.logSeq = 0;
     this.winnerId = null;
     this._checkStart();
   }
@@ -57,6 +61,7 @@ class GameEngine {
   }
 
   addLog(text) {
+    this.logSeq++;
     this.log.push({ text, ts: Date.now() });
     if (this.log.length > 200) this.log.shift();
   }
@@ -383,9 +388,12 @@ class GameEngine {
     this._resumeAfterLoss(then);
   }
 
-  _targetEliminated(pending) {
-    if (!pending.targetId) return false;
-    return !this.isAlive(this.getPlayer(pending.targetId));
+  // A ação só continua se autor e alvo seguem vivos: o alvo pode ter perdido
+  // a última carta num desafio (ex.: desafiou o Assassino com 1 carta) e o
+  // autor pode ter desistido enquanto alguém escolhia qual carta perder.
+  _actionCannotProceed(pending) {
+    if (!this.isAlive(this.getPlayer(pending.actorId))) return true;
+    return !!pending.targetId && !this.isAlive(this.getPlayer(pending.targetId));
   }
 
   _resumeAfterLoss(then) {
@@ -395,9 +403,7 @@ class GameEngine {
         break;
       case 'action_challenge_survived': {
         const action = ACTIONS[this.pending.action];
-        // O alvo pode ter perdido a última carta no desafio (ex.: desafiou o
-        // Assassino com 1 carta): morto não bloqueia nem sofre o efeito.
-        if (this._targetEliminated(this.pending)) {
+        if (this._actionCannotProceed(this.pending)) {
           this._advanceTurn();
         } else if (action.blockable) {
           this._openBlockWindow(this.pending);
@@ -416,7 +422,7 @@ class GameEngine {
         break;
       case 'block_fails':
         this.addLog('O bloqueio falhou. A ação prossegue.');
-        if (this._targetEliminated(this.pending)) {
+        if (this._actionCannotProceed(this.pending)) {
           this._advanceTurn();
         } else {
           this._applyEffect(this.pending);
@@ -667,6 +673,7 @@ class GameEngine {
       turnPlayerId: this.currentPlayer().id,
       winnerId: this.winnerId,
       log: this.log.slice(-40),
+      logSeq: this.logSeq,
       pending: this._publicPending(playerId),
       players: this.players.map((p) => ({
         id: p.id,

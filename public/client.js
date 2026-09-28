@@ -99,6 +99,9 @@
   let lastGameState = null;
   let activeModalKey = null;
   let peekedKey = null;
+  // Modal "Aguarde" que o jogador fechou: é só informativo, então não volta
+  // a abrir nem acende o botão Responder (quem não deve resposta não responde).
+  let dismissedStatusKey = null;
   let exchangeSelection = [];
   let toastTimer = null;
   let wasKicked = false;
@@ -388,7 +391,7 @@
 
     el('turn-indicator').innerHTML = state.phase === 'game_over'
       ? ''
-      : (state.turnPlayerId === state.you ? '<strong>É a sua vez</strong>' : `Vez de <strong>${turnPlayer ? turnPlayer.name : ''}</strong>`);
+      : (state.turnPlayerId === state.you ? '<strong>É a sua vez</strong>' : `Vez de <strong>${turnPlayer ? escapeHtml(turnPlayer.name) : ''}</strong>`);
 
     el('btn-forfeit').hidden = state.phase === 'game_over' || !myself || !myself.alive;
 
@@ -522,7 +525,7 @@
       <h2>${meta.label}</h2>
       <p class="desc">Escolha o alvo desta ação.</p>
       <div class="modal-choices">
-        ${targets.map((t) => `<button class="choice-player" data-id="${t.id}">${t.name}</button>`).join('')}
+        ${targets.map((t) => `<button class="choice-player" data-id="${t.id}">${escapeHtml(t.name)}</button>`).join('')}
       </div>
       <div class="modal-actions"><button class="btn btn-ghost" id="modal-cancel">Cancelar</button></div>
     `);
@@ -550,7 +553,7 @@
       const winner = state.players.find((p) => p.id === state.winnerId);
       openModal(`
         <h2>Fim de Jogo</h2>
-        <p class="winner-banner">${winner ? `${winner.name} venceu a partida!` : 'A partida terminou.'}</p>
+        <p class="winner-banner">${winner ? `${escapeHtml(winner.name)} venceu a partida!` : 'A partida terminou.'}</p>
         <div class="modal-actions" style="margin-top:18px">
           <button class="btn btn-primary" id="btn-rematch">Voltar ao início</button>
         </div>
@@ -575,11 +578,11 @@
     const claimLabel = pending.claimedCharacter ? CHAR_META[pending.claimedCharacter].name : '';
 
     if (state.phase === 'challenge_action') {
-      const key = `challenge_action:${pending.actorId}:${pending.action}:${state.log.length}`;
+      const key = `challenge_action:${pending.actorId}:${pending.action}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       if (!eligible) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         if (state.you === pending.actorId || pending.respondedIds.includes(state.you)) {
           showStatusModal(key, `${actorName} alega ser ${claimLabel} para usar ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}.`, waitingListText(pending, state), state);
         }
@@ -605,12 +608,12 @@
     }
 
     if (state.phase === 'block_window') {
-      const key = `block_window:${pending.actorId}:${pending.action}:${state.log.length}`;
+      const key = `block_window:${pending.actorId}:${pending.action}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       const blockChars = actionBlockedBy(pending.action, state.mode);
       if (!eligible) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${actorName} usou ${actionLabel(pending.action)}${targetName ? ` em ${targetName}` : ''}. Aguardando decisão sobre bloqueio…`, waitingListText(pending, state), state);
         return;
       }
@@ -639,12 +642,12 @@
 
     if (state.phase === 'challenge_block') {
       const blockerName = playerName(pending.blockerId);
-      const key = `challenge_block:${pending.blockerId}:${state.log.length}`;
+      const key = `challenge_block:${pending.blockerId}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       const eligible = pending.eligibleIds.includes(state.you) && !pending.respondedIds.includes(state.you);
       const claimBlock = CHAR_META[pending.blockCharacter].name;
       if (!eligible) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${blockerName} alega ser ${claimBlock} para bloquear a ação de ${actorName}.`, waitingListText(pending, state), state);
         return;
       }
@@ -668,10 +671,10 @@
     }
 
     if (state.phase === 'awaiting_loss') {
-      const key = `loss:${pending.awaitingLossPlayerId}:${state.log.length}`;
+      const key = `loss:${pending.awaitingLossPlayerId}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.awaitingLossPlayerId !== state.you) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${playerName(pending.awaitingLossPlayerId)} precisa revelar uma influência…`, '', state);
         return;
       }
@@ -696,10 +699,10 @@
     }
 
     if (state.phase === 'exchange_choice') {
-      const key = `exchange:${state.log.length}`;
+      const key = `exchange:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.actorId !== state.you) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${actorName} está escolhendo cartas na troca…`, '', state);
         return;
       }
@@ -713,10 +716,10 @@
     }
 
     if (state.phase === 'examine_reveal') {
-      const key = `examine_reveal:${pending.targetId}:${state.log.length}`;
+      const key = `examine_reveal:${pending.targetId}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.targetId !== state.you) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${playerName(pending.targetId)} está escolhendo uma carta para mostrar ao Inquisidor…`, '', state);
         return;
       }
@@ -741,10 +744,10 @@
     }
 
     if (state.phase === 'examine_decision') {
-      const key = `examine_decision:${pending.actorId}:${state.log.length}`;
+      const key = `examine_decision:${pending.actorId}:${state.logSeq}`;
       if (peekedKey && peekedKey !== key) { peekedKey = null; updateRespondButton(); }
       if (pending.actorId !== state.you) {
-        if (peekedKey === key) { updateRespondButton(); return; }
+        if (peekedKey === key) { peekedKey = null; dismissedStatusKey = key; updateRespondButton(); }
         showStatusModal(key, `${actorName} está decidindo se troca a carta de ${targetName}…`, '', state);
         return;
       }
@@ -779,6 +782,7 @@
     // Chave própria: após "Passar" a chave da fase é a mesma do modal de decisão,
     // então sem o sufixo o modal de decisão nunca seria substituído.
     const statusKey = `${key}:status`;
+    if (dismissedStatusKey === key) return;
     if (activeModalKey === statusKey) {
       const statusEl = modalContent.querySelector('.modal-status');
       if (statusEl) statusEl.textContent = status;
@@ -792,7 +796,10 @@
       ${countdownHtml(state)}
       <div class="modal-actions" style="margin-top:14px"><button class="btn btn-ghost" id="btn-peek">Fechar</button></div>
     `);
-    modalContent.querySelector('#btn-peek').addEventListener('click', () => peekModal(key));
+    modalContent.querySelector('#btn-peek').addEventListener('click', () => {
+      dismissedStatusKey = key;
+      closeModal();
+    });
   }
 
   function renderExchangeModal(pending, key, state) {

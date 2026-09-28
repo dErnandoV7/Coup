@@ -63,7 +63,7 @@ const DECISION_PHASES = new Set([
 ]);
 
 function pendingFingerprint(room) {
-  return `${room.engine.phase}:${room.engine.log.length}`;
+  return `${room.engine.phase}:${room.engine.logSeq}`;
 }
 
 function clearPendingTimeout(room) {
