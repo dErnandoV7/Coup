@@ -274,6 +274,17 @@
           clearIdentity();
           myToken = null;
           myRoomCode = null;
+          // Sem isso a tela antiga da partida continua visível, mas o servidor
+          // (ex.: reiniciado num deploy) já não conhece a sala e ignora tudo.
+          if (!screenGame.hidden) {
+            openModal(`
+              <h2>Partida Encerrada</h2>
+              <p class="desc">A conexão com a partida foi perdida (o servidor pode ter reiniciado). Crie uma nova sala para continuar jogando.</p>
+              <div class="modal-actions"><button class="btn btn-primary" id="btn-lost-ok">Voltar ao início</button></div>
+            `);
+            activeModalKey = 'session-lost';
+            modalContent.querySelector('#btn-lost-ok').addEventListener('click', () => location.reload());
+          }
         }
       });
     }

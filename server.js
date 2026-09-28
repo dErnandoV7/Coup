@@ -200,7 +200,9 @@ io.on('connection', (socket) => {
   function withGame(handler) {
     return (payload = {}) => {
       const found = rooms.findBySocketId(socket.id);
-      if (!found || !found.room.started) return;
+      if (!found || !found.room.started) {
+        return sendError(socket, 'Você não está mais em uma partida ativa. Recarregue a página.');
+      }
       const { room, player } = found;
       try {
         handler(room, player, payload);
