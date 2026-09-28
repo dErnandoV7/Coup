@@ -37,6 +37,9 @@ function broadcastGame(room) {
         hostToken: room.hostToken,
         chat: room.chat,
         respondBy: room.responseDeadline,
+        rematch: room.rematch
+          ? { deadline: room.rematch.deadline, votes: [...room.rematch.votes] }
+          : null,
       });
     }
   }
@@ -49,10 +52,67 @@ function broadcast(room) {
     // clients when to stop counting down.
     scheduleResponseTimeout(room);
     scheduleTurnWatchdog(room);
+    openRematchIfGameOver(room);
     broadcastGame(room);
   } else {
     broadcastLobby(room);
   }
+}
+
+// ---------- Rematch ----------
+
+// Ao fim da partida, abre uma votação de REMATCH_WINDOW_MS para jogar de
+// novo. Quem votar (se forem 2 ou mais) começa uma partida nova na mesma
+// sala, com o mesmo modo e tempo; quem não votar volta para a tela inicial.
+const REMATCH_WINDOW_MS = 10000;
+const MIN_PLAYERS = 2;
+
+function rematchCandidates(room) {
+  return room.players.filter((p) => p.connected && !p.kicked);
+}
+
+function openRematchIfGameOver(room) {
+  if (room.rematch || room.engine.phase !== 'game_over') return;
+  room.rematch = {
+    deadline: Date.now() + REMATCH_WINDOW_MS,
+    votes: new Set(),
+    timer: setTimeout(() => resolveRematch(room), REMATCH_WINDOW_MS),
+  };
+}
+
+function resolveRematch(room) {
+  const rematch = room.rematch;
+  if (!rematch || rematch.resolved) return;
+  rematch.resolved = true;
+  clearTimeout(rematch.timer);
+  if (rooms.getRoom(room.code) !== room) return; // sala já foi removida (todos saíram)
+
+  const voters = room.players.filter((p) => rematch.votes.has(p.token) && p.connected && !p.kicked);
+  const enough = voters.length >= MIN_PLAYERS;
+  for (const p of room.players) {
+    if (enough && voters.includes(p)) continue;
+    if (!p.socketId) continue;
+    const socket = io.sockets.sockets.get(p.socketId);
+    if (socket) socket.leave(room.code);
+    io.to(p.socketId).emit('rematch_closed', {
+      message: rematch.votes.has(p.token) ? 'Não houve jogadores suficientes para uma nova partida.' : null,
+    });
+  }
+
+  if (!enough) {
+    clearPendingTimeout(room);
+    rooms.rooms.delete(room.code);
+    return;
+  }
+
+  room.players = voters;
+  if (!voters.some((p) => p.token === room.hostToken)) room.hostToken = voters[0].token;
+  clearPendingTimeout(room);
+  room.rematch = null;
+  room.engine = null;
+  room.chat = [];
+  rooms.startGame(room);
+  broadcast(room);
 }
 
 // ---------- Response time limit ----------
@@ -259,6 +319,18 @@ io.on('connection', (socket) => {
     if (room.chat.length > 50) room.chat.shift();
   }));
 
+  socket.on('rematch_vote', safeLobbyHandler(() => {
+    const found = rooms.findBySocketId(socket.id);
+    if (!found) return;
+    const { room, player } = found;
+    const rematch = room.rematch;
+    if (!rematch || rematch.resolved || player.kicked) return;
+    rematch.votes.add(player.token);
+    const everyoneVoted = rematchCandidates(room).every((p) => rematch.votes.has(p.token));
+    if (everyoneVoted) resolveRematch(room);
+    else broadcast(room);
+  }));
+
   socket.on('kick_player', safeLobbyHandler(({ targetToken }, ack) => {
     const found = rooms.findBySocketId(socket.id);
     if (!found) return;
@@ -274,6 +346,7 @@ io.on('connection', (socket) => {
       } catch (err) {
         return sendError(socket, err.message);
       }
+      target.kicked = true; // continua no elenco da partida, mas não entra na revanche
     } else {
       rooms.removePlayer(room, targetToken);
     }

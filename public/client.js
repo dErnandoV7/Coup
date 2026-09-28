@@ -298,6 +298,20 @@
     el('btn-start').disabled = false;
   });
 
+  // Votação de revanche encerrada sem incluir este jogador: volta ao início.
+  socket.on('rematch_closed', ({ message } = {}) => {
+    if (wasKicked) return;
+    clearIdentity();
+    if (!message) { location.reload(); return; }
+    openModal(`
+      <h2>Fim de Jogo</h2>
+      <p class="desc">${escapeHtml(message)}</p>
+      <div class="modal-actions"><button class="btn btn-primary" id="btn-closed-ok">Voltar ao início</button></div>
+    `);
+    activeModalKey = 'rematch-closed';
+    modalContent.querySelector('#btn-closed-ok').addEventListener('click', () => location.reload());
+  });
+
   socket.on('kicked', () => {
     wasKicked = true;
     clearIdentity();
@@ -545,23 +559,35 @@
 
   function syncModal(state, myself) {
     if (state.phase === 'game_over') {
-      const key = 'game_over';
+      const rematch = state.rematch;
+      const votes = rematch ? rematch.votes : [];
+      const key = `game_over:${votes.join(',')}`;
       if (activeModalKey === key) return;
       activeModalKey = key;
       peekedKey = null;
+      dismissedStatusKey = null; // a próxima partida recomeça o logSeq do zero
       updateRespondButton();
       const winner = state.players.find((p) => p.id === state.winnerId);
+      const iVoted = votes.includes(state.you);
       openModal(`
         <h2>Fim de Jogo</h2>
         <p class="winner-banner">${winner ? `${escapeHtml(winner.name)} venceu a partida!` : 'A partida terminou.'}</p>
+        ${rematch ? `
+          <p class="desc">Quem quiser jogar de novo nesta sala tem até o fim da contagem.</p>
+          <p class="modal-countdown" data-respond-by="${rematch.deadline}"></p>
+          <p class="modal-status">${votes.length ? `Vão jogar de novo: ${votes.map(playerName).join(', ')}` : 'Ninguém votou ainda.'}</p>
+        ` : ''}
         <div class="modal-actions" style="margin-top:18px">
-          <button class="btn btn-primary" id="btn-rematch">Voltar ao início</button>
+          <button class="btn btn-ghost" id="btn-home">Voltar ao início</button>
+          ${rematch ? `<button class="btn btn-primary" id="btn-play-again" ${iVoted ? 'disabled' : ''}>${iVoted ? 'Aguardando os outros…' : 'Jogar novamente'}</button>` : ''}
         </div>
       `);
-      modalContent.querySelector('#btn-rematch').addEventListener('click', () => {
+      modalContent.querySelector('#btn-home').addEventListener('click', () => {
         clearIdentity();
         location.reload();
       });
+      const playAgain = modalContent.querySelector('#btn-play-again');
+      if (playAgain) playAgain.addEventListener('click', () => { socket.emit('rematch_vote'); });
       return;
     }
 
