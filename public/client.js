@@ -765,12 +765,15 @@
   }
 
   function showStatusModal(key, desc, status, state) {
-    if (activeModalKey === key) {
+    // Chave própria: após "Passar" a chave da fase é a mesma do modal de decisão,
+    // então sem o sufixo o modal de decisão nunca seria substituído.
+    const statusKey = `${key}:status`;
+    if (activeModalKey === statusKey) {
       const statusEl = modalContent.querySelector('.modal-status');
       if (statusEl) statusEl.textContent = status;
       return;
     }
-    activeModalKey = key;
+    activeModalKey = statusKey;
     openModal(`
       <h2>Aguarde</h2>
       <p class="desc">${desc}</p>
