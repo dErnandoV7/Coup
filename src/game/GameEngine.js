@@ -349,6 +349,11 @@ class GameEngine {
   _queueLoss(playerId, then) {
     const player = this.getPlayer(playerId);
     const remaining = player.influence.filter((c) => !c.revealed);
+    if (remaining.length === 0) {
+      // Já eliminado: pedir uma carta que não existe travaria a partida.
+      this._resumeAfterLoss(then);
+      return;
+    }
     if (remaining.length === 1) {
       // Only one possible card: auto-resolve, no need to ask the player.
       this._continueAfterLoss(playerId, remaining[0].character, then);
