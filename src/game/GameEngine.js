@@ -378,6 +378,11 @@ class GameEngine {
     this._resumeAfterLoss(then);
   }
 
+  _targetEliminated(pending) {
+    if (!pending.targetId) return false;
+    return !this.isAlive(this.getPlayer(pending.targetId));
+  }
+
   _resumeAfterLoss(then) {
     switch (then.type) {
       case 'target_hit':
@@ -385,7 +390,11 @@ class GameEngine {
         break;
       case 'action_challenge_survived': {
         const action = ACTIONS[this.pending.action];
-        if (action.blockable) {
+        // O alvo pode ter perdido a última carta no desafio (ex.: desafiou o
+        // Assassino com 1 carta): morto não bloqueia nem sofre o efeito.
+        if (this._targetEliminated(this.pending)) {
+          this._advanceTurn();
+        } else if (action.blockable) {
           this._openBlockWindow(this.pending);
         } else {
           this._applyEffect(this.pending);
@@ -402,7 +411,11 @@ class GameEngine {
         break;
       case 'block_fails':
         this.addLog('O bloqueio falhou. A ação prossegue.');
-        this._applyEffect(this.pending);
+        if (this._targetEliminated(this.pending)) {
+          this._advanceTurn();
+        } else {
+          this._applyEffect(this.pending);
+        }
         break;
       default:
         this._advanceTurn();
